@@ -1,0 +1,9 @@
+# Pinned for /usr/bin/python3 (3.9) on macOS arm64. Install with:
+#   pip install --require-hashes --no-deps --only-binary=:all: -r requirements.txt
+onnxruntime==1.19.2 \
+    --hash=sha256:006c8d326835c017a9e9f74c9c77ebb570a71174a1e89fe078b29a557d9c3848
+numpy==2.0.2 \
+    --hash=sha256:423e89b23490805d2a5a96fe40ec507407b8ee786d66f7328be214f9679df6dd \
+    --hash=sha256:2b2955fa6f11907cf7a70dab0d0755159bca87755e831e47932367fc8f2f2d0b
+tokenizers==0.22.2 \
+    --hash=sha256:1e418a55456beedca4621dbab65a318981467a2b188e982a23e117f115ce5001

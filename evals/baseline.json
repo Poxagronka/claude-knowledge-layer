@@ -1,0 +1,36 @@
+{
+  "all": {
+    "n": null,
+    "neg_clean": null,
+    "precision": null,
+    "recall": null,
+    "recall_by_lang": null
+  },
+  "code_hash": "68f6431c96881bcf59d579163ff38d7038d8742f9e1224b9cee24cc608b0ec3c",
+  "date": "2026-10-20",
+  "dev": {
+    "n": null,
+    "neg_clean": null,
+    "precision": null,
+    "recall": null,
+    "recall_by_lang": null
+  },
+  "en_ru_recall": null,
+  "git_sha": "",
+  "holdout": {
+    "n": null,
+    "neg_clean": null,
+    "precision": null,
+    "recall": null,
+    "recall_by_lang": null
+  },
+  "latency_s": {
+    "p50": null,
+    "p95": null
+  },
+  "measured": false,
+  "params": {
+    "pipeline": "unmeasured template: after you fill the vault, run scripts/bench_hook.py --json evals/baseline.json"
+  },
+  "ranker_paths": {}
+}

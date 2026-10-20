@@ -1,0 +1,89 @@
+{
+ "search": "-file:_template -file:_graveyard",
+ "colorGroups": [
+  {
+   "query": "tag:#kind/businessline",
+   "color": {
+    "a": 1,
+    "rgb": 14692657
+   }
+  },
+  {
+   "query": "tag:#kind/team",
+   "color": {
+    "a": 1,
+    "rgb": 15764480
+   }
+  },
+  {
+   "query": "tag:#kind/app",
+   "color": {
+    "a": 1,
+    "rgb": 3120708
+   }
+  },
+  {
+   "query": "tag:#kind/service",
+   "color": {
+    "a": 1,
+    "rgb": 1667522
+   }
+  },
+  {
+   "query": "tag:#kind/metric",
+   "color": {
+    "a": 1,
+    "rgb": 10237621
+   }
+  },
+  {
+   "query": "tag:#kind/vendor",
+   "color": {
+    "a": 1,
+    "rgb": 820633
+   }
+  },
+  {
+   "query": "tag:#kind/process",
+   "color": {
+    "a": 1,
+    "rgb": 6727695
+   }
+  },
+  {
+   "query": "tag:#kind/initiative",
+   "color": {
+    "a": 1,
+    "rgb": 14037868
+   }
+  },
+  {
+   "query": "tag:#kind/tool",
+   "color": {
+    "a": 1,
+    "rgb": 8818326
+   }
+  },
+  {
+   "query": "path:lessons/",
+   "color": {
+    "a": 1,
+    "rgb": 16429061
+   }
+  },
+  {
+   "query": "path:repos/",
+   "color": {
+    "a": 1,
+    "rgb": 6241732
+   }
+  },
+  {
+   "query": "path:api/",
+   "color": {
+    "a": 1,
+    "rgb": 556891
+   }
+  }
+ ]
+}

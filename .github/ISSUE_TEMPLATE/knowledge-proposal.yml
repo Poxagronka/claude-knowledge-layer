@@ -1,0 +1,45 @@
+name: Knowledge proposal
+description: Propose an add, fix or removal in your organization's knowledge vault
+title: "knowledge: "
+labels: [knowledge-proposal]
+body:
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Change type
+      options: [add, fix, remove, lesson, tool]
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      description: "`domain/file.md#^id` for an existing entry, or `new: domain/file.md`"
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-text
+    attributes:
+      label: Proposed text
+      description: The entry in the vault format. See plugins/knowledge/vault/_template.md.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: A command with its output, a URL, or file:line.
+    validations:
+      required: true
+  - type: input
+    id: source-project
+    attributes:
+      label: Source project
+      description: The repo or project where you found it.
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Checks
+      options:
+        - label: No secrets or personal data
+          required: true

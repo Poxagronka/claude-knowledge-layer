@@ -1,0 +1,28 @@
+# Needs secrets: GITHUB_TOKEN (automatic).
+# Needs variables: none.
+# Needs labels: telemetry (on telemetry issues).
+name: Fleet health
+
+# Weekly report from the plugin telemetry issues. Kill switch: disable this
+# workflow in the Actions tab.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fleet_health.py --days 7 | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"

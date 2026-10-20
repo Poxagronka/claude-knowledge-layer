@@ -1,0 +1,28 @@
+{
+ "files": [
+  {
+   "dest": "e5/tokenizer.json",
+   "url": "https://huggingface.co/Xenova/multilingual-e5-small/resolve/761b726dd34fb83930e26aab4e9ac3899aa1fa78/tokenizer.json",
+   "size": 17082730,
+   "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"
+  },
+  {
+   "dest": "e5/model.onnx",
+   "url": "https://huggingface.co/Xenova/multilingual-e5-small/resolve/761b726dd34fb83930e26aab4e9ac3899aa1fa78/onnx/model_int8.onnx",
+   "size": 118054593,
+   "sha256": "4d24e2bc01a447951524466ef533e52944bf48509e6552810bcee1a2711cb02c"
+  },
+  {
+   "dest": "rerank/tokenizer.json",
+   "url": "https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1/resolve/1427fd652930e4ba29e8149678df786c240d8825/tokenizer.json",
+   "size": 17082660,
+   "sha256": "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626"
+  },
+  {
+   "dest": "rerank/model.onnx",
+   "url": "https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1/resolve/1427fd652930e4ba29e8149678df786c240d8825/onnx/model_qint8_arm64.onnx",
+   "size": 118620017,
+   "sha256": "1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4"
+  }
+ ]
+}

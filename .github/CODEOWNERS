@@ -1,0 +1,10 @@
+# @Poxagronka is the template maintainer. scripts/adapt.py rewrites this owner.
+# Enable "Require review from Code Owners" after you add your maintainers.
+# The vault and docs use the knowledge review.
+/.github/                          @Poxagronka
+/scripts/                          @Poxagronka
+/plugins/knowledge/scripts/        @Poxagronka
+/plugins/knowledge/hooks/          @Poxagronka
+/plugins/knowledge/runtime/        @Poxagronka
+/plugins/knowledge/skills/         @Poxagronka
+/plugins/knowledge/integrity.json  @Poxagronka

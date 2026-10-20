@@ -1,0 +1,183 @@
+# Needs secrets: GITHUB_TOKEN (automatic).
+# Needs variables: REVIEW_AUTHORS (JSON array, empty = no approval).
+# Needs labels: claude: approved, claude: changes needed,
+#   knowledge: approved, knowledge: changes needed.
+name: Auto approve
+
+# Three paths to an approval:
+#
+# 1. code PRs — fires when the review adds the "claude: approved" label (see
+#    claude-review.yml). any other label (e.g. "claude: changes needed") fails
+#    the `if`, so the job is skipped — never failed. the merge gate clears only
+#    after the review signs off, not on open.
+# 2. docs-only PRs outside the vault — `claude-review.yml` skips the orchestrated
+#    review for them, so no label is ever added. approve directly instead,
+#    otherwise the required review would never clear. NOTE this cannot be done
+#    by having some other job add the label: events raised with GITHUB_TOKEN do
+#    not trigger workflows, so a bot-applied label would never reach path 1. the
+#    review's own label works only because claude-code-action authenticates as
+#    a GitHub App.
+# 3. knowledge PRs (any path under plugins/knowledge/vault/) — path 2 stands
+#    down. the `knowledge-review` job in claude-review.yml adds "knowledge:
+#    approved", and path 1 approves once every label the PR needs is present.
+#
+# Trigger: `pull_request_target`. GitHub then runs THIS file from the base branch,
+# so a PR cannot edit the approval logic to approve itself. Rule: the workspace
+# root is the base commit (main). PR head files are only ever data, under
+# `.review-ctx/head` in claude-review.yml, and no step executes them. A PR that
+# changes this workflow is judged by main's version: its changes take effect
+# after merge. Bootstrap: the PR that introduces this switch is reviewed by
+# neither version (main's file listens to `pull_request`, the PR's file to
+# `pull_request_target`), so it needs one manual approval.
+on:
+  pull_request_target:
+    types: [labeled, opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  # One classification for all approval paths. It runs `scripts/classify_pr.sh`,
+  # the same script as claude-review.yml, so the two always agree. It runs for
+  # allowlisted authors only, the same set both approval jobs below accept.
+  classify:
+    if: >
+      contains(fromJson(vars.REVIEW_AUTHORS || '[]'), github.event.pull_request.user.login)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.check.outputs.docs_only }}
+      has_knowledge: ${{ steps.check.outputs.has_knowledge }}
+    steps:
+      # Run the classifier from the BASE commit, never the PR head: a PR could
+      # rewrite its own classifier. If the script is missing at base (the PR that
+      # adds it), fail CLOSED: code, and the knowledge gate forced on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/classify_pr.sh
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -f scripts/classify_pr.sh ]; then
+            bash scripts/classify_pr.sh
+          else
+            echo "classifier missing at base: failing closed"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "has_knowledge=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Both labels exist because two reviews can apply to one PR. A PR with code AND
+  # vault files needs the code review ("claude: approved") and the knowledge
+  # review ("knowledge: approved"). Approving on the first label alone would
+  # merge content the other review has not signed off. The labels come from two
+  # parallel runs, so the CURRENT labels are read from the API, not from the
+  # event payload: the payload only holds the labels at the moment of the event.
+  auto-approve:
+    needs: classify
+    # The review labels come from the claude-code-action app or from the trusted
+    # label step, so `sender.type == 'Bot'`. A human with triage rights could add
+    # a label by hand and get an approval otherwise. The one exception is the
+    # allowlisted reviewer: they can set `claude: approved` or
+    # `knowledge: approved` by hand. Other human labels do not count.
+    if: >
+      github.event.action == 'labeled' &&
+      (github.event.sender.type == 'Bot' ||
+       contains(fromJson(vars.REVIEW_AUTHORS || '[]'), github.event.sender.login)) &&
+      (github.event.label.name == 'claude: approved' ||
+       github.event.label.name == 'knowledge: approved')
+    runs-on: ubuntu-latest
+    steps:
+      - id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          DOCS_ONLY: ${{ needs.classify.outputs.docs_only }}
+          HAS_KNOWLEDGE: ${{ needs.classify.outputs.has_knowledge }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$REPO" --json labels -q '.labels[].name' > labels.txt
+          echo "current labels:"; cat labels.txt
+          need=0; ok=1
+          # The code label is required unless the PR is docs-only.
+          if [ "$DOCS_ONLY" != "true" ]; then
+            need=1
+            grep -qxF "claude: approved" labels.txt || ok=0
+          fi
+          # The knowledge label is required when the PR touches the vault.
+          if [ "$HAS_KNOWLEDGE" = "true" ]; then
+            need=1
+            grep -qxF "knowledge: approved" labels.txt || ok=0
+          fi
+          # need=0 is a docs-only PR outside the vault: the docs job owns it.
+          if [ "$need" = 1 ] && [ "$ok" = 1 ]; then
+            echo "approve=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "approve=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.labels.outputs.approve == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" >/dev/null
+
+  # The author allowlist here and the review's docs-only skip must cover the same
+  # PRs: a PR that skipped the review but is not eligible for this approval would
+  # sit BLOCKED with no verdict at all. Vault PRs are excluded: the knowledge
+  # label path above owns them.
+  auto-approve-docs:
+    needs: classify
+    if: >
+      github.event.action != 'labeled' &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - if: >
+          needs.classify.outputs.docs_only == 'true' &&
+          needs.classify.outputs.has_knowledge != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" >/dev/null
+
+      # A PR that opened docs-only and later grew code must not keep the
+      # docs-path approval — that would merge code the review never signed off
+      # on (or explicitly labelled "changes needed"). Dismiss it; the review now
+      # runs on this same event and owns the verdict from here on. A vault PR
+      # also lands here on every push: its approval comes only from the label
+      # path, after the knowledge review re-runs on the new commit.
+      - name: Dismiss the docs-path approval once code or vault files appear
+        if: >
+          needs.classify.outputs.docs_only != 'true' ||
+          needs.classify.outputs.has_knowledge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+            -q '.[] | select(.state == "APPROVED")
+                    | select(.user.login == "github-actions[bot]") | .id' \
+            > ids.txt
+          while read -r id; do
+            [ -n "$id" ] || continue
+            echo "dismissing stale approval $id"
+            gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+              -f message='PR is not docs-only outside the vault — the Claude or knowledge review owns the verdict.' \
+              -f event=DISMISS >/dev/null
+          done < ids.txt

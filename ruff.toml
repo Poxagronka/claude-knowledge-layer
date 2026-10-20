@@ -1,0 +1,6 @@
+# tools/ carries its own lint through its Makefile `check` target (see scripts/ci_units.py).
+extend-exclude = ["tools"]
+
+# The plugin runs on the macOS system Python 3.9 (README). Ruff then rejects newer syntax in plugins/.
+[per-file-target-version]
+"plugins/**" = "py39"

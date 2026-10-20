@@ -1,0 +1,30 @@
+{
+  "org": "Example Org",
+  "scope": "Knowledge specific to Example Org: its teams, people and roles, products, services, metrics, vendors, processes, initiatives, decisions and lessons. No generic tool facts.",
+  "issues_repo": "",
+  "marketplace": "knowledge-layer",
+  "root_hub": "org-example",
+  "hub_kinds": {
+    "org": 8500,
+    "team": 5500,
+    "person": 2500,
+    "product": 1500,
+    "service": 2000,
+    "metric": 6500,
+    "vendor": 6000,
+    "process": 2000,
+    "initiative": 3000,
+    "tool": 1500,
+    "competitor": 4500,
+    "platform": 1000,
+    "playbook": 1500,
+    "datasource": 11000
+  },
+  "person_required": ["title", "department"],
+  "directory": {
+    "base_env": "DIRECTORY_API_BASE",
+    "key_env": "DIRECTORY_API_KEY",
+    "users_path": "/api/v1/users",
+    "department_regex": ".*"
+  }
+}

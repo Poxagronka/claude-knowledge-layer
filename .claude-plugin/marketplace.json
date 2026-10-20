@@ -1,0 +1,16 @@
+{
+  "name": "knowledge-layer",
+  "description": "Shared knowledge plugins for Claude Code",
+  "owner": {"name": "knowledge-layer contributors"},
+  "plugins": [
+    {
+      "name": "knowledge",
+      "description": "Shared knowledge graph for Claude Code sessions",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Poxagronka/claude-knowledge-layer.git",
+        "path": "plugins/knowledge"
+      }
+    }
+  ]
+}

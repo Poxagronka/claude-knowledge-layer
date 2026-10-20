@@ -1,0 +1,9 @@
+title = "Knowledge layer secret scan"
+
+# No global regex allowlist: an allowlist regex hides every match it fits.
+# A false positive gets the inline marker `gitleaks:allow` on its line, with the reason in the PR body.
+
+[extend]
+useDefault = true
+
+# No paths are exempt. Add narrow false-positive exceptions only after review.

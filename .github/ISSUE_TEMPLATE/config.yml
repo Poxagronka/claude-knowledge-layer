@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Capture knowledge from a session
+    url: https://docs.github.com/en/issues/tracking-your-work-with-issues/creating-an-issue
+    about: Set issues_repo in knowledge.json to enable capture issues and the offline issue queue.

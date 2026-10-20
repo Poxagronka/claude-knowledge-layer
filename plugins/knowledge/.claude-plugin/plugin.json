@@ -1,0 +1,5 @@
+{
+  "name": "knowledge",
+  "description": "Shared knowledge graph for Claude Code sessions",
+  "author": {"name": "knowledge-layer contributors"}
+}

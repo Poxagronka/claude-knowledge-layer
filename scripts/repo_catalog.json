@@ -1,0 +1,32 @@
+{
+  "orgs": {
+    "example-org": "Example organization",
+    "example-partners": "Example partner organization"
+  },
+  "name_filter": ".*",
+  "skip": [
+    "example-skip"
+  ],
+  "default_hub": "org-example",
+  "repos": {
+    "example-app": {
+      "type": "product",
+      "hubs": [
+        "product-example-app",
+        "team-example"
+      ]
+    },
+    "example-package": {
+      "type": "package",
+      "hubs": [
+        "tool-example-tool"
+      ]
+    },
+    "example-service": {
+      "type": "service",
+      "hubs": [
+        "service-example-service"
+      ]
+    }
+  }
+}
