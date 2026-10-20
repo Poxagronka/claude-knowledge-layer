@@ -115,7 +115,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.unit }}-${{ hashFiles(format('{0}/**/*.lock', matrix.unit), format('{0}/**/requirements*.txt', matrix.unit), format('{0}/**/pyproject.toml', matrix.unit), format('{0}/**/package-lock.json', matrix.unit), format('{0}/**/go.sum', matrix.unit), format('{0}/**/Cargo.lock', matrix.unit)) }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.unit }}-
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: make check
         env:
           UNIT: ${{ matrix.unit }}
