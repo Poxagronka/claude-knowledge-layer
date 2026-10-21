@@ -349,7 +349,11 @@ def _file_errors(rel, text, errors, doc_ids, hubs, block_ids):
     if meta is None or not meta.get("id") or not meta.get("type"):
         errors.append("%s:1: frontmatter with id and type is required" % rel)
     else:
-        if meta["type"] not in FILE_TYPES:
+        if meta["type"] == "catalog":
+            errors.append("%s:1: type catalog was replaced by one repos/<name>.md file per repo (type repo). "
+                          "Copy any curated purpose lines into the new files, then delete this file "
+                          "and run scripts/repo_catalog.py" % rel)
+        elif meta["type"] not in FILE_TYPES:
             errors.append("%s:1: type %s must be one of %s" % (rel, meta["type"], "|".join(FILE_TYPES)))
         if meta["id"] != expected_id(rel):
             errors.append("%s:1: id %s must equal %s" % (rel, meta["id"], expected_id(rel)))

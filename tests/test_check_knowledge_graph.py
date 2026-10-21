@@ -30,6 +30,15 @@ def test_valid_vault_passes(tmp_path):
     assert ckg.main(["--root", str(tmp_path)]) == 0
 
 
+def test_old_catalog_type_explains_upgrade(tmp_path):
+    make_valid(tmp_path)
+    write(tmp_path, "repos/org.md", FM % ("repos/org", "catalog"))
+    errors = [e for e in ckg.check(str(tmp_path)) if e.startswith("repos/org.md:1:")]
+    assert len(errors) == 1
+    assert "one repos/<name>.md file per repo" in errors[0]
+    assert "must be one of" not in errors[0]
+
+
 def test_main_default_root_is_real_vault():
     assert ckg.main([]) == 0
 
