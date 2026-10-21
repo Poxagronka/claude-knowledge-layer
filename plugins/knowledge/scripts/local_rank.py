@@ -1,5 +1,6 @@
 """Local ranker runtime: state checks, background install spawn, ranker call.
 
+Opt-in: nothing installs or runs unless KNOWLEDGE_LOCAL is set on (`1`, `true`, `on`, `yes`).
 Stdlib only, Python 3.9. The runtime (venv, ONNX models, vault vectors) lives in
 $CLAUDE_PLUGIN_DATA. Every function fails soft: no runtime means the caller injects named hubs only.
 """
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import time
 
+import plugin_state
 import switches
 
 OPT_OUT_ENV = "KNOWLEDGE_LOCAL"
@@ -38,16 +40,27 @@ def data_path(*parts):
 
 
 def venv_python():
+    if sys.platform == "win32":
+        return data_path("venv", "Scripts", "python.exe")
     return data_path("venv", "bin", "python")
 
 
-def enabled():
-    """Local ranking runs on macOS arm64 only, and the owner can switch it off."""
-    return (
-        sys.platform == "darwin"
-        and platform.machine() == "arm64"
-        and not switches.env_off(OPT_OUT_ENV)
+def supported():
+    """Local ranking has pinned wheels for macOS arm64 and Windows x64 only."""
+    return (sys.platform == "darwin" and platform.machine() == "arm64") or (
+        sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64")
     )
+
+
+def enabled():
+    """Opt-in: local ranking runs on a supported platform when KNOWLEDGE_LOCAL is set on."""
+    return supported() and switches.env_on(OPT_OUT_ENV)
+
+
+def requirements_path():
+    """Pinned packages of this platform."""
+    name = "requirements-windows.txt" if sys.platform == "win32" else "requirements.txt"
+    return os.path.join(runtime_dir(), name)
 
 
 def _digest(chunks):
@@ -64,7 +77,7 @@ def _read(path):
 
 def stamp():
     """Version of the runtime: changes when the pinned packages or the model manifest change."""
-    return _digest(_read(os.path.join(runtime_dir(), name)) for name in ("requirements.txt", "manifest.json"))
+    return _digest(_read(path) for path in (requirements_path(), os.path.join(runtime_dir(), "manifest.json")))
 
 
 def vault_key(vault_dir):
@@ -100,10 +113,10 @@ def ready(vault_dir):
 def install_state(vault_dir):
     """Ranker install state for telemetry: off, unsupported, ready, failed or installing."""
     try:
-        if switches.env_off(OPT_OUT_ENV):
-            return "off"
-        if not (sys.platform == "darwin" and platform.machine() == "arm64"):
+        if not supported():
             return "unsupported"
+        if not switches.env_on(OPT_OUT_ENV):
+            return "off"
         if ready(vault_dir):
             return "ready"
         try:
@@ -128,15 +141,17 @@ def ensure(vault_dir):
         except OSError:
             pass
         subprocess.Popen(
-            [sys.executable, os.path.join(runtime_dir(), "install.py")],
-            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [sys.executable, "-X", "utf8", os.path.join(runtime_dir(), "install.py")],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plugin_state.detached(),
         )
     except Exception:
         pass
 
 
 def sock_path():
-    """Daemon socket. Only the runtime stamp is in the name, so every cached plugin version shares one daemon."""
+    """Daemon socket path. Only the runtime stamp is in the name, so every cached plugin version shares one daemon.
+
+    On Windows (no AF_UNIX) the file holds the daemon's TCP port on 127.0.0.1 instead."""
     return data_path("run", "rank-%s.sock" % _digest([stamp().encode()])[:8])
 
 
@@ -152,9 +167,17 @@ def _valid(reply):
 
 def ask_daemon(request):
     """Return the daemon's checked reply dict, None on a bad reply, or raise OSError when no daemon answers."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+    if sys.platform == "win32":
+        try:
+            with open(sock_path()) as fh:
+                address, family = ("127.0.0.1", int(fh.read().strip())), socket.AF_INET
+        except ValueError as exc:
+            raise OSError("bad port file") from exc
+    else:
+        address, family = sock_path(), socket.AF_UNIX
+    with socket.socket(family, socket.SOCK_STREAM) as conn:
         conn.settimeout(CONNECT_TIMEOUT)
-        conn.connect(sock_path())
+        conn.connect(address)
         conn.settimeout(RANK_TIMEOUT)
         conn.sendall(request.encode("utf-8") + b"\n")
         raw = b""
@@ -170,14 +193,14 @@ def ask_daemon(request):
     if _valid(reply):
         return reply
     if b'"error"' in raw and b'"ids"' not in raw:
-        raise OSError("daemon error")  # dead daemon: rank() drops the socket and respawns
+        raise OSError("daemon error")  # the daemon owns socket cleanup; rank() requests a restart
     return None
 
 
 def spawn_daemon():
     subprocess.Popen(
-        [venv_python(), "-I", os.path.join(runtime_dir(), "rank.py"), "--serve"],
-        start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [venv_python(), "-X", "utf8", "-I", os.path.join(runtime_dir(), "rank.py"), "--serve"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **plugin_state.detached(),
     )
 
 
@@ -193,9 +216,9 @@ def prewarm(vault_dir):
 def rank(prompt, seen):
     """Return the ranker's reply {"ids", "pins", "scores", "warm"}, or None on any failure.
 
-    The warm daemon answers when it runs ("warm" is True). Otherwise start one for the next prompt and rank in a one-shot process now.
+    Only the flocked daemon loads the models ("warm" is True). When it does not answer, start one for the next prompt and return None for this prompt. The prompt process never loads the models: one process per prompt multiplied by sessions exhausted RAM.
     """
-    request = json.dumps({"prompt": prompt, "seen": sorted(seen)})
+    request = json.dumps({"prompt": prompt, "seen": sorted(seen), "deadline": time.time() + RANK_TIMEOUT})
     try:
         reply = ask_daemon(request)
         return dict(reply, warm=True) if reply else None
@@ -203,23 +226,9 @@ def rank(prompt, seen):
         return None
     except OSError:
         try:
-            os.unlink(sock_path())
-        except OSError:
-            pass
-        try:
             spawn_daemon()
         except Exception:
             pass
+        return None
     except Exception:
         return None
-    try:
-        done = subprocess.run(
-            [venv_python(), "-I", os.path.join(runtime_dir(), "rank.py")],
-            input=request, capture_output=True, text=True, timeout=RANK_TIMEOUT,
-        )
-        reply = json.loads(done.stdout)
-        if done.returncode == 0 and _valid(reply):
-            return dict(reply, warm=False)
-    except Exception:
-        pass
-    return None

@@ -77,11 +77,13 @@ def percentiles(raw):
 def fields(sess, vault_dir):
     """Selector telemetry fields built from the session."""
     return {
-        "injected": top(sess.get("injected", {}), lambda v: v.get("s2", 0) + v.get("s3", 0)),
+        "injected": top(sess.get("injected", {}), lambda v: v.get("s2", 0) + v.get("s3", 0) + v.get("tool", 0)),
         "missed": top(sess.get("missed", {})),
         "missed_after_none": sess.get("missed_after_none", 0),
         "reread_after_inject": top(sess.get("reread_after_inject", {})),
         "select_ms": percentiles(sess.get("select_ms_raw", [])),
+        "haiku_ms": percentiles(sess.get("haiku_ms_raw", [])),
         "select_timeout": sess.get("select_timeout", 0),
+        "select_paused": sess.get("select_paused", 0),
         "ranker_install": local_rank.install_state(vault_dir),
     }

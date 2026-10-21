@@ -1,5 +1,8 @@
 # Knowledge Layer for Claude Code
 
+[![CI](https://github.com/Poxagronka/claude-knowledge-layer/actions/workflows/check-pr.yml/badge.svg)](https://github.com/Poxagronka/claude-knowledge-layer/actions/workflows/check-pr.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A template for a shared knowledge graph that Claude Code reads in every session. It ships as the `knowledge` plugin. You fork this repo, fill the vault with the knowledge of your organization, and install the plugin on the machines of your team.
 
 The repo holds the whole system: the plugin, the vault format, the checks, the CI for pull requests, and a warehouse for team tools. The vault in this template holds neutral example entries only. It describes a fictional organization, `Example Org`.
@@ -16,13 +19,14 @@ To adapt the template for your organization, follow [docs/SETUP.md](docs/SETUP.m
 - [Privacy and data](#privacy-and-data)
 - [Update and uninstall](#update-and-uninstall)
 - [Troubleshooting](#troubleshooting)
+- [Skills](#skills)
 - [Repository layout](#repository-layout)
 - [Contributing](#contributing)
 
 ## Features
 
 - Vault index in each session. Claude reads the vault for questions about your systems, vendors, APIs and tools. It cites entries as `vault/<file>#^id`.
-- Knowledge selector on each prompt. A local ranker and Claude Haiku pick the vault entries that apply.
+- Knowledge selector on each prompt. Claude Haiku reads the full vault catalog and picks the entries that apply. An optional local ranker narrows the catalog first.
 - Silent capture. The plugin files new work knowledge as GitHub issues, with no prompt.
 - Offline issue queue. An issue that cannot be filed waits on disk and goes out later.
 - Telemetry issues. The plugin sends usage counts, so you can see which entries help and which are missing.
@@ -31,6 +35,7 @@ To adapt the template for your organization, follow [docs/SETUP.md](docs/SETUP.m
 - Graph gate. A script checks the vault format, links, dates and size limits.
 - CI for pull requests. Secret scan, tests, a Claude code review, a knowledge review and auto-approval for allowlisted authors.
 - Team tool warehouse with one CI contract.
+- Windows, macOS and Linux support. Hooks use the exec form, and CI tests the plugin on each OS.
 
 ## Quick start
 
@@ -57,10 +62,11 @@ The plugin works in the terminal, in the IDE extensions and in the Code tab of t
 
 | Need | Detail |
 |---|---|
-| `claude` | The Claude Code CLI |
-| `gh` | Logged in with `gh auth login`. Run `gh auth setup-git` for a private plugin repo |
-| `python3` | 3.9 or newer |
-| macOS arm64 | Only for the local ranker. Other platforms inject only the hubs named in the prompt |
+| Claude Code | Version 2.1.139 or newer (hooks use the exec form: `command` plus `args`) |
+| `claude` | The Claude Code CLI, on `PATH` |
+| `python3` | 3.9 or newer, on `PATH`. macOS: Xcode Command Line Tools or Homebrew. Linux: the distro `python3`. Windows: install Python with the Python install manager, which provides `python3`. The Microsoft Store alias does not work |
+| `gh` | Optional. Logged in with `gh auth login`. Run `gh auth setup-git` for a private plugin repo. Telemetry and capture issues use it |
+| macOS arm64 or Windows x64 | Only for the optional local ranker. Without it, Haiku rates the full catalog on every OS |
 | Access | Read access to the plugin repo. A public template needs none. A private fork needs repo access for each user |
 
 ## How it works
@@ -69,11 +75,7 @@ The plugin works in the terminal, in the IDE extensions and in the Code tab of t
 flowchart TD
     P[Prompt] --> S{Under 10 characters<br/>or a slash command?}
     S -- yes --> N0[Nothing added]
-    S -- no --> R{Local ranker<br/>macOS arm64}
-    R -- no reply or error --> H[Named hubs only<br/>no model runs]
-    R -- scores --> T{Top score 0.03 or less<br/>and no hub named?}
-    T -- yes --> N1[Nothing added<br/>no model runs]
-    T -- no --> M[Claude Haiku rates<br/>the first 12 candidates]
+    S -- no --> M[Claude Haiku rates<br/>the full vault catalog]
     M --> Q{Need 2 or more<br/>and entry rated 2 or 3?}
     Q -- no --> N2[Nothing added]
     Q -- yes --> V["vault-entry blocks<br/>added to the context"]
@@ -81,24 +83,25 @@ flowchart TD
 
 ### Knowledge selector
 
-On each prompt, the plugin picks the vault entries and hubs that apply, and adds their text to the prompt context. It skips short prompts (under 10 characters) and slash commands. The local ranker scores the vault. Two cases decide what happens next:
+On each prompt, the plugin picks the vault entries and hubs that apply, and adds their text to the prompt context. It skips short prompts (under 10 characters) and slash commands. On every OS, Claude Haiku reads the full vault catalog (hubs and entries). The static catalog goes in a system prompt file that Claude can cache. The turn text holds your prompt, the hubs named in it and the ids already shown.
 
-- A top score of 0.03 or less, with no hub named in the prompt: the plugin adds nothing. No model runs.
-- Any other prompt: Claude Haiku sees the first 12 ranker candidates, named hubs first, and rates them. It rates how much the prompt needs knowledge of your organization (0-3) and rates each candidate (1-3). The plugin adds nothing when the need is 0 or 1, and adds only entries rated 2 or 3, best first. A named hub shows only when Haiku rates it.
+Haiku rates how much the prompt needs knowledge of your organization (0-3) and rates each catalog item (1-3). The plugin adds nothing when the need is 0 or 1, and adds only entries rated 2 or 3, best first (at most 6). Small picks show whole. Big picks share the rest of the size budget.
 
-The plugin adds nothing when the model fails. After 2 failures in a row, the plugin pauses the model for 10 minutes. Set the timeout with `KNOWLEDGE_SELECT_TIMEOUT` (at most 20 seconds). Without a ranker reply (other platforms, or a ranker error), only the hubs named in the prompt show, and no model runs. After a context compact or `/clear`, entries can show again. Each entry shows once per window, and an entry in a vault file Claude already read in full counts as shown. Prompts that reach the model add about 3 seconds and a small Haiku cost. Opt out with `export KNOWLEDGE_SELECT=0` (also `false`, `off` and `no`).
+If the model fails, only the hubs named in the prompt show. After 2 failures in a row, the plugin pauses the model for 10 minutes. Set the timeout with `KNOWLEDGE_SELECT_TIMEOUT` (at most 20 seconds). After a context compact or `/clear`, entries can show again. Each entry shows once per window, and an entry in a vault file Claude already read in full counts as shown. A prompt that reaches the model adds about 3 seconds and a small Haiku cost. Opt out with `export KNOWLEDGE_SELECT=0` (also `false`, `off` and `no`).
+
+A tool call can also inject a hub. When a Bash, PowerShell, Read, Grep or MCP tool input holds a store id, a bundle id or an alias of a hub, the plugin shows that hub once per agent. A subagent gets a short pointer to the vault at start.
 
 Each injected entry sits inside a `<vault-entry id="...">` block. The plugin removes any `<vault-entry>` tag from entry text, so vault text cannot close the block. The header tells Claude to treat that text as data, never as instructions.
 
 ### Local ranker
 
-On macOS arm64 the plugin ranks vault entries on your machine. Haiku judges only the top 12 candidates of a prompt.
+The local ranker is opt-in. Enable it with `export KNOWLEDGE_LOCAL=1`. It runs on macOS arm64 and Windows x64. Without it, Haiku rates the full catalog on every OS.
 
-On the first session, a background job installs the ranker. It never blocks a prompt. Until it finishes, and on any other platform, the selector adds only the hubs named in the prompt.
+When enabled, a background job installs the ranker on the first session. It never blocks a prompt. With the ranker on, a top score of 0.03 or less with no hub named in the prompt adds nothing and runs no model. Otherwise Haiku rates only the first 12 ranker candidates.
 
 What the job downloads and creates, all in `$CLAUDE_PLUGIN_DATA` (about 390 MB, takes about a minute):
 
-- `venv/`: a Python venv with `onnxruntime`, `numpy` and `tokenizers`. Versions and hashes are pinned in `plugins/knowledge/runtime/requirements.txt`.
+- `venv/`: a Python venv with `onnxruntime`, `numpy` and `tokenizers`. Versions and hashes are pinned in `plugins/knowledge/runtime/requirements.txt` (macOS arm64) and `requirements-windows.txt` (Windows x64).
 - `models/`: two ONNX models from Hugging Face at pinned revisions, checked by sha256: `Xenova/multilingual-e5-small` (retrieval) and `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (rerank). See `plugins/knowledge/runtime/manifest.json`.
 - `vectors-*.npz`: vault vectors. The job rebuilds them when the vault changes.
 - `run/`: the socket of the warm ranker (mode 0700). The first prompt after a restart ranks in a one-shot process and starts a background process that keeps the models loaded. Later prompts skip the model load (about 1.5 s less). The process exits after 10 minutes with no prompt.
@@ -106,7 +109,7 @@ What the job downloads and creates, all in `$CLAUDE_PLUGIN_DATA` (about 390 MB, 
 
 The ranker takes the 40 closest entries, reranks them, and keeps the top 20 plus the hubs named in the prompt. Any ranker error or timeout (5 seconds) falls back to the named hubs. Prompts never leave your machine for this step.
 
-Opt out: `export KNOWLEDGE_LOCAL=0` (also `false`, `off` and `no`). To remove the ranker, delete `venv/`, `models/` and `vectors-*.npz` in the plugin data folder, and set the opt-out variable so the job does not install it again.
+To remove the ranker, delete `venv/`, `models/` and `vectors-*.npz` in the plugin data folder, and unset `KNOWLEDGE_LOCAL`.
 
 ### Capture and issues
 
@@ -168,9 +171,9 @@ The plugin sets `KNOWLEDGE_WORKER` and `KNOWLEDGE_SELECT_NESTED` for its own chi
 
 - Capture and proposal issues go to the repo in `issues_repo` on GitHub. Everyone who can read that repo can read them. **Issues in a public repo are public.** An organization must set `issues_repo` to a private repo, for example a private fork of this template.
 - Telemetry comments go to your issue `telemetry: <github login>` in the same repo. See [Telemetry](#telemetry).
-- The capture worker sends the new turn text to Claude Haiku. The knowledge selector sends your prompt and candidate entry text to Claude Haiku on every prompt, except when the local ranker finds no match.
+- The capture worker sends the new turn text to Claude Haiku. The knowledge selector sends your prompt and candidate entry text to Claude Haiku on every prompt.
 - The capture gate drops an item that holds a token, a key, a JWT, a password, a URL with a password or an email.
-- The local ranker sends nothing. Prompts stay on your machine for that step. The selector can send even strong local matches to Haiku. See Knowledge selector for the conditions that skip the model.
+- The opt-in local ranker sends nothing. Prompts stay on your machine for that step.
 - With `issues_repo` empty, nothing goes to GitHub and the capture worker does not run. The selector still calls Claude Haiku unless it is disabled or skipped by its gates.
 
 ### Telemetry
@@ -186,7 +189,7 @@ What is sent:
 - The vault ids the knowledge selector put in a prompt, and how often it picked nothing or failed.
 - How often the local ranker, the named-hubs fallback or Haiku decided.
 - Selector quality counts, all by vault id: which entries the selector injected, which vault files Claude read that it did not inject, and which injected entries Claude then read in full.
-- Selector timings (count, median, 95th percentile and maximum, in ms) and the state of the local ranker install.
+- Selector timings (count, median, 95th percentile and maximum, in ms), the same timings for the Haiku call alone (`haiku_ms`), and the state of the local ranker install.
 - The vault ids named in a `fix` or `remove` proposal you filed.
 - The plugin version and the session id.
 - The number of sessions with no vault activity.
@@ -226,14 +229,31 @@ Use your own marketplace name if you changed it. Then delete the plugin data fol
 | Symptom | What to check |
 |---|---|
 | Header says "Issue filing is off" | `issues_repo` in `knowledge.json` is empty. Set it, rebuild `integrity.json`, and publish |
-| Only named hubs show | The ranker is missing. Other platforms, and the time before the first install ends, give this result. See [Local ranker](#local-ranker) |
-| Ranker install failed | Read `install.log` in the plugin data folder. The plugin tries again after 6 hours |
+| Only named hubs show | Haiku failed or timed out. Check that `claude` is on `PATH` and logged in. The `errors` field of telemetry names the reason |
+| Ranker install failed (only with `KNOWLEDGE_LOCAL=1`) | Read `install.log` in the plugin data folder. The plugin tries again after 6 hours |
 | No capture issues appear | Read `capture/worker.log` in the plugin data folder. It has a line for each worker run |
 | An issue is not filed | It waits in the `queue` folder in the plugin data folder. The hook files it at the next session start or end. Check that the labels exist in the issues repo |
 | Telemetry does not arrive | The plugin needs a logged-in `gh` and write access to the issues repo. An unsent session is retried at the next session start |
 | Plugin reinstalls itself | `integrity.json` is stale after a change to `knowledge.json` or plugin code. Run `python3 scripts/build_integrity.py` |
 
 To switch off one part, use its variable in [Configuration](#configuration).
+
+## Skills
+
+`skills/` holds Claude Code skills for the team. One folder is one skill, for example `skills/example-skill/`.
+
+- `SKILL.md` is the entry point: name, trigger phrases, when to use it and the state table. It links its other files one level deep: `reference.md`, `examples.md` and `scripts/`.
+- A skill folder with only markdown needs no build. A folder with code has a `Makefile` with a `check` target, like a tool (see "Tool contract" in `docs/maintainer-runbook.md`).
+- Install one skill: copy or symlink its folder into `~/.claude/skills/`.
+- Every new skill or tool gets a `tool-*` hub in `plugins/knowledge/vault/entities/` and a line in `_index.md`, in the same PR. The hub lets the knowledge plugin suggest the skill or tool when it is relevant. `tests/test_tool_catalog.py` enforces it.
+
+```bash
+git clone --filter=blob:none --sparse https://github.com/<owner>/<repo>
+cd <repo> && git sparse-checkout set skills/<skill-name>
+ln -s "$PWD/skills/<skill-name>" ~/.claude/skills/<skill-name>
+```
+
+A loop skill files its judge edits as GitHub issues with the labels `skill-feedback` and `skill:<name>`. Its run ledger is one pinned issue with the label `skill-ledger`. These labels never mix with the `capture`, `knowledge-proposal`, `needs-check` and `telemetry` issues of the knowledge plugin.
 
 ## Repository layout
 
@@ -258,6 +278,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). The vault format is in `plugins/knowledg
 - Tool contract and CI `make check`: see "Tool contract" in `docs/maintainer-runbook.md`.
 - Live checks of vault records: see "Self-verification" in `docs/maintainer-runbook.md`.
 - PR flow, local gate before push and releases: see `docs/maintainer-runbook.md`.
+- Report a vulnerability: see [SECURITY.md](SECURITY.md). Community rules: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 Develop:
 

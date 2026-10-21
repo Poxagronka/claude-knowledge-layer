@@ -3,33 +3,116 @@
     "SessionStart": [
       {
         "matcher": "startup|resume|clear|compact",
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook.py\" session-start"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "session-start"
+            ]
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook.py\" session-end"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "session-end"
+            ]
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook.py\" stop"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "stop"
+            ]
+          }
+        ]
       }
     ],
     "PreCompact": [
       {
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook.py\" pre-compact"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "pre-compact"
+            ]
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/knowledge_select.py\"", "timeout": 30, "statusMessage": "Picking knowledge"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "timeout": 30,
+            "statusMessage": "Picking knowledge",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/knowledge_select.py"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "subagent-start"
+            ]
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Grep|Bash",
-        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook.py\" track"}]
+        "matcher": "Read|Grep|Bash|PowerShell|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "-X",
+              "utf8",
+              "${CLAUDE_PLUGIN_ROOT}/scripts/hook.py",
+              "track"
+            ]
+          }
+        ]
       }
     ]
   }

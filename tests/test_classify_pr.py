@@ -1,5 +1,9 @@
 import os
 import subprocess
+import sys
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="bash CI scripts: POSIX only")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "scripts", "classify_pr.sh")

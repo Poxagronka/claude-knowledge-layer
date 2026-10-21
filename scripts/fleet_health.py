@@ -59,12 +59,13 @@ def parse(body):
 
 
 def sessions(payloads, since):
-    """One payload per session_id (a final one wins, else the latest), ended since `since` (ISO string)."""
+    """One payload per (session_id, started_at) (final wins, else latest), ended since `since` (ISO string)."""
     best = {}
     for p in payloads:
         sid = p.get("session_id")
         if not sid:
             continue
+        sid = (sid, p.get("started_at"))
         key = (p.get("final", True), p.get("ended_at") or "")
         old = best.get(sid)
         if old is None or key > (old.get("final", True), old.get("ended_at") or ""):

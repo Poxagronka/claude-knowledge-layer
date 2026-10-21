@@ -6,7 +6,6 @@ vault vectors, then the stamp. Only one installer runs (flock). Logs to $CLAUDE_
 A failure writes install.failed, so SessionStart does not retry for a few hours.
 """
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -18,6 +17,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts"))
 import local_rank as lr  # noqa: E402
+import plugin_state  # noqa: E402
 
 MAX_LOG = 200000
 STEP_TIMEOUT = 900
@@ -37,13 +37,20 @@ def run(cmd, timeout=STEP_TIMEOUT):
 
 
 def make_venv():
-    base = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else shutil.which("python3")
+    if sys.platform == "win32":
+        base = sys.executable
+    else:
+        base = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else shutil.which("python3")
     venv = lr.data_path("venv")
-    shutil.rmtree(venv, ignore_errors=True)
+    for _ in range(45):  # Windows cannot delete a venv an old daemon still runs from: it exits within a minute once the stamp is gone
+        shutil.rmtree(venv, ignore_errors=True)
+        if not os.path.exists(venv):
+            break
+        time.sleep(2)
     run([base, "-m", "venv", venv])
     run([lr.venv_python(), "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
          "--require-hashes", "--no-deps", "--only-binary=:all:",
-         "-r", os.path.join(lr.runtime_dir(), "requirements.txt")])
+         "-r", lr.requirements_path()])
     run([lr.venv_python(), "-I", "-c", "import onnxruntime, numpy, tokenizers"])
 
 
@@ -117,7 +124,7 @@ def main():
     os.makedirs(lr.data_dir(), exist_ok=True)
     lock = open(lr.data_path("install.lock"), "a")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        plugin_state.flock(lock, wait=False)
     except OSError:
         return 0
     try:

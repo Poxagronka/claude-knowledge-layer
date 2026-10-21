@@ -314,7 +314,7 @@ def expected_id(rel):
     """A hub id is the file basename. Any other id is the path without .md."""
     if os.path.dirname(rel) == "entities":
         return os.path.basename(rel)[:-3]
-    return rel[:-3].replace(os.sep, "/")
+    return rel[:-3]
 
 
 def _file_errors(rel, text, errors, doc_ids, hubs, block_ids):
@@ -346,7 +346,7 @@ def _file_errors(rel, text, errors, doc_ids, hubs, block_ids):
             else:
                 ids[bid] = num
     block_ids[rel] = ids
-    if rel.startswith("entities" + os.sep):
+    if rel.startswith("entities/"):
         base = os.path.basename(rel)[:-3]
         if base in hubs:
             errors.append("%s:1: duplicate hub basename %s (also %s)" % (rel, base, hubs[base]))
@@ -375,7 +375,7 @@ def check(vault):
     files = {}
     doc_ids = {}
     for path in md_files(vault):
-        rel = os.path.relpath(path, vault)
+        rel = os.path.relpath(path, vault).replace(os.sep, "/")
         with open(path, encoding="utf-8") as fh:
             files[rel] = fh.read()
     for rel, text in files.items():
@@ -384,7 +384,7 @@ def check(vault):
         meta = frontmatter(text)
         if meta and meta.get("type") in ID_SHAPE:
             errors.extend(entry_checks(rel, meta["type"], hubs, files, logs, meta.get("id")))
-        elif meta and rel.startswith("entities" + os.sep):
+        elif meta and rel.startswith("entities/"):
             errors.extend(hub_checks(rel, meta, logs, len(text.encode("utf-8"))))
     _link_errors(files, hubs, block_ids, errors)
     return errors

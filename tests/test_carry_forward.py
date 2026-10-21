@@ -3,7 +3,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import sys
+
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="bash CI scripts: POSIX only")
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "carry_forward.sh"
 

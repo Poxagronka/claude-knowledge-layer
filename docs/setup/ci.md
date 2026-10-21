@@ -14,6 +14,8 @@ Each workflow file starts with a comment that lists the secrets, variables and l
 | `claude-review.yml` | `pull_request_target` | `classify`, `review`, `knowledge-review` | Claude code review and the knowledge review. Sets labels and approves |
 | `auto-approve.yml` | `pull_request_target` | `auto-approve`, `auto-approve-docs` | Approves from labels, and approves docs-only pull requests directly |
 | `fleet-health.yml` | Weekly cron, manual | `report` | Reads telemetry comments, prints a report, fails on an alert |
+| `plugin-matrix.yml` | `pull_request` on plugin or test paths, manual | `matrix` | Runs `pytest -q tests` and `scripts/ci_hook_smoke.py` on Linux, Windows and macOS, x64 and arm64, with Python 3.9 and 3.14. Windows checks out with CRLF. Not a required check, because arm runners may be unavailable for a private repo |
+| `ranker-windows.yml` | `pull_request` on ranker paths, manual | `ranker` | Proves that the opt-in local ranker installs and answers on Windows x64. It downloads about 250 MB of models on a cold cache. Not a required check |
 | `dependabot.yml` | Dependabot | none | Monthly updates of the pinned GitHub Actions |
 
 ## Pull request flow

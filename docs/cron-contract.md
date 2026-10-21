@@ -37,11 +37,11 @@ Capture Proposed text may be raw. The cron rewrites it into the vault format and
 
 Telemetry comments of mixed schemas exist side by side. The cron treats an absent field as 0. A missing `final` counts as `true`. It skips schema below 7 for selector metrics.
 
-Each comment holds one fenced `json` block. Schema 10 (schema 9 lacked `errors`; schema 8 lacked `worker_captures`; schema 7 lacked `final`; schema 6 lacked `captures`; schema 5 lacked `ranker`; schema 4 lacked `reread_after_compact` and `reinjected_after_compact`; schema 3, shipped on main, lacked `selected`, `select_none`, `select_fail`, `select_levels`, `ranker`, `reread_after_compact` and `reinjected_after_compact`; it had `captures` and `stale_reports`):
+Each comment holds one fenced `json` block. Schema 11 (schema 10 lacked the `tool` count in `injected`; schema 9 lacked `errors`; schema 8 lacked `worker_captures`; schema 7 lacked `final`; schema 6 lacked `captures`; schema 5 lacked `ranker`; schema 4 lacked `reread_after_compact` and `reinjected_after_compact`; schema 3, shipped on main, lacked `selected`, `select_none`, `select_fail`, `select_levels`, `ranker`, `reread_after_compact` and `reinjected_after_compact`; it had `captures` and `stale_reports`):
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | int | always `10` |
+| `schema` | int | always `11` |
 | `final` | bool | `true` at session end, `false` for an interim snapshot sent before each context compact. A snapshot is cumulative: counters are not reset |
 | `session_id` | string | Claude Code session id |
 | `started_at`, `ended_at` | string | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
@@ -55,20 +55,20 @@ Each comment holds one fenced `json` block. Schema 10 (schema 9 lacked `errors`;
 | `stale_reports` | array | vault ids named in a `knowledge-proposal` issue of type `fix` or `remove` that the session created, max 20. An entry is `domain/file#^id`. A hub is its basename. Read from the target id, or from the `### Target` line of the `--body-file`. Users flag stale records this way |
 | `selected` | object | vault id to count of times the Haiku selector put it in the prompt context. An id shows once per session, so the count is 1 unless a context compact or `/clear` resets the dedup |
 | `select_none` | int | prompts where the selector picked nothing (the model, or a ranker score below the gate). A session with only `select_none` or `select_fail` is idle: the plugin sends no comment for it and counts it in `idle_sessions_since_last`. A session with `selected` picks is active |
-| `select_fail` | int | prompts where the selector model failed, timed out or answered bad JSON |
+| `select_fail` | int | prompts where the selector model failed, timed out or answered bad JSON. The reason of each failure is counted in `errors` under `haiku:<ExcType>`: `TimeoutExpired` is a timeout, `RuntimeError` is a non-zero exit of `claude -p`, `ValueError` is a reply with no JSON object or a bad shape, `FileNotFoundError` is no `claude` on PATH. |
 | `select_levels` | object | flat counter of the ratings Haiku gave: `need0` to `need3` (one per prompt that got a valid reply) and `s1` to `s3` (every rated pick, including `s1` and picks the gate dropped). Injection needs `need` >= 2 and `s` >= 2. These counts feed a later calibration of both thresholds against usage. The thresholds are not calibrated yet |
 | `ranker` | object | counter of prompts, by deciding path: `local` (the on-device ranker replied), `fallback` (no ranker reply: only hubs named in the prompt), `haiku` (the prompt reached the Haiku call, a subset of `local`) and `warm` (the subset of `local` that the warm ranker process answered). Absent keys mean zero |
 | `reread_after_compact` | int | full reads (Read without `offset` or `limit`, or a Bash read) of a vault file that held an id the selector showed before the last compact or `/clear`. Measurement only |
 | `reinjected_after_compact` | int | times the selector showed again an id it had shown before the last compact or `/clear`. Measurement only |
-| `injected` | object | vault id to `{"s2": n, "s3": n}`: how often the selector injected it, by Haiku rating. Max 50 ids, highest total first. Example: `{"api/rules#^R1": {"s2": 0, "s3": 1}}` |
+| `injected` | object | vault id to `{"s2": n, "s3": n, "tool": n}`: how often the selector injected it, by Haiku rating, and how often a tool call that named the hub (a store or bundle id, an alias) injected it. `tool` is absent when 0. Max 50 ids, highest total first. Example: `{"api/rules#^R1": {"s2": 0, "s3": 1}, "entities/app-shop-app": {"s2": 0, "s3": 0, "tool": 2}}` |
 | `missed` | object | recall misses: vault file id (path without `.md`) to count of turns in which Claude read that file (Read tool or Bash read) while the selector ran, did not inject it, and had not shown it earlier in the window. A turn runs from one prompt to the next. Max 50 ids, highest count first. Example: `{"api/rules": 2}` |
 | `missed_after_none` | int | turns where the selector injected nothing (`need` <= 1 or no pick with `s` >= 2) and Claude then read a vault file anyway. One per turn. A failed selector run is not counted |
 | `reread_after_inject` | object | file id to count of turns in which Claude read in full a file whose entry the selector had just injected in the same turn. A sign the snippet was not enough, or the entry was relevant. Max 50 ids. Example: `{"entities/service-example-service": 1}` |
 | `select_ms` | object | wall time of the selector hook per run that passed the prompt filter: `{"n", "p50", "p95", "max"}` in ms. Raw values (last 500) stay in the session file. Example: `{"n": 12, "p50": 4100, "p95": 9800, "max": 21000}` |
 | `select_timeout` | int | selector runs where the Haiku call hit its timeout. These also count in `select_fail` |
-| `ranker_install` | string | state of the local ranker at send time: `ready`, `installing`, `failed` (the installer failed for this runtime version), `unsupported` (not macOS arm64) or `off` (owner opt-out) |
+| `ranker_install` | string | state of the local ranker at send time: `ready`, `installing`, `failed` (the installer failed for this runtime version), `unsupported` (not macOS arm64 or Windows x64) or `off` (the ranker is opt-in and `KNOWLEDGE_LOCAL` is not set) |
 | `idle_sessions_since_last` | int | sessions with no vault activity since the previous send. The consumer is the adoption metric: sessions where the plugin was loaded but unused |
-| `errors` | object | count of swallowed plugin errors since the last final send, keyed `<place>:<ExcType>` (for example `select:OSError`). Counts are approximate under races. No message text. Example: `{"track:ValueError": 1}` |
+| `errors` | object | count of swallowed plugin errors since the previous send of any session on this machine (each send takes the counts, so a count appears in at most one payload, approximate under races; a send that fails before the comment posts puts them back), keyed `<place>:<ExcType>` (for example `select:OSError`). Counts are approximate under races. No message text. Example: `{"track:ValueError": 1}` |
 
 The cron reads the selector fields like this:
 
@@ -77,7 +77,7 @@ The cron reads the selector fields like this:
 - Noisy entries: ids high in `injected` with no `hits` and no `reread_after_inject`. They cost context and nobody reads them.
 - Useful entries: ids with a high `reread_after_inject` rate. The snippet is too short or the entry is on target.
 - `missed_after_none` over `select_none` shows how often the `need` gate closed wrongly.
-- Latency per user: `select_ms` and `select_timeout` per issue, split by `ranker_install`. A user with `failed` or `installing` gets named hubs only.
+- Latency per user: `select_ms` and `select_timeout` per issue, split by `ranker_install`. The ranker is opt-in, so most users show `off`. A user with `failed` or `installing` gets full-catalog Haiku selection without the ranker.
 
 Prompts and code are never sent. Only vault ids, counts and timings. A retried comment can arrive late. Key on `session_id`: per `session_id`, a `final: true` snapshot wins. Without one, the latest snapshot wins. A late interim post never replaces the final one, so nothing is counted twice.
 
@@ -184,3 +184,23 @@ A code PR:
 - A PR from an author outside the allowlist gets no Claude review and is never auto-approved. It waits for a human approval.
 
 The cron job must use an allowlisted author. Otherwise the vault PR waits for a human approval.
+
+## Plugin health (weekly routine)
+
+`scripts/telemetry_report.py` builds a plugin-health report from the telemetry comments. A weekly routine runs it. The `gh` CLI does not work in the routine, so the routine fetches the comments itself and passes them with `--input FILE`. The file is a JSON list of `{"user": login, "body": comment body}`. `--json FILE` writes the machine result.
+
+The script dedupes sessions by `session_id` and keeps the `final` record or the latest `ended_at`. It selects sessions by `ended_at` in the last `--days` (default 7). It compares them with the window before. It counts bad json blocks and skips them.
+
+Four anomaly rules, each with a stable key:
+
+- `select-fail-rate:<user>`: `select_fail` is at least 3 and above 5% of prompts. Prompts are the sum of `select_ms.n`. With zero prompts the base is `select_fail` plus `select_none`.
+- `error:<errkey>`: an `errors` key is in the window and absent in the previous window.
+- `select-latency:<user>`: the median of session `select_ms.p95` is above 8000 ms.
+- `stale-version:<user>`: the last session of the user runs an older `plugin_version` than the newest one. The newest version is at least 24 hours old at that session.
+
+The routine files one issue per anomaly:
+
+1. Search open issues with label `plugin-bug` whose title starts with `[<key>]`.
+2. On a match, add a comment with this week's detail.
+3. Without a match, open an issue titled `[<key>] <title>`.
+4. Never close an issue. Fixes go through normal PRs.

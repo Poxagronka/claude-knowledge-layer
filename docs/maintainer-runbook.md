@@ -98,6 +98,7 @@ CI runs `make check` for each changed tool folder. A tool folder has a `Makefile
 - Optional: set `CI_SHARDS = N` (1 to 16) to split the work. CI runs one job per shard. It passes the variables `SHARD` (1-based) and `SHARDS`.
 - A folder with only markdown files (for example a skill) needs no `Makefile`.
 - A folder with code and no `check` target fails the `units` job.
+- Every new skill or tool gets a `tool-*` hub in `plugins/knowledge/vault/entities/` and a line in `_index.md`, in the same PR. `tests/test_tool_catalog.py` enforces it.
 
 ```make
 CI_SHARDS = 2

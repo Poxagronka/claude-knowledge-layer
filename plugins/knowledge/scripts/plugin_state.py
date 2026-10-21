@@ -1,8 +1,8 @@
 """State shared by the plugin scripts: env switches, paths, JSON helpers, the session file and the error counter."""
 import contextlib
-import fcntl
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 import config
@@ -70,14 +70,46 @@ def write_json(path, obj):
     tmp = path + ".tmp." + str(os.getpid())
     with open(tmp, "w") as fh:
         json.dump(obj, fh)
-    os.replace(tmp, path)
+    for attempt in range(100):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file that another process holds open for a moment.
+            if os.name != "nt" or attempt == 99:
+                raise
+            time.sleep(0.01)
+
+
+def flock(fh, wait=True):
+    """Take an exclusive lock on an open file until it closes. Raises OSError when wait is False and the lock is taken."""
+    if os.name == "nt":
+        import msvcrt
+        fh.seek(0)
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if not wait:
+                    raise
+                time.sleep(0.01)
+    import fcntl
+    fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+
+
+def detached():
+    """Popen kwargs that detach a child from the hook process on this OS."""
+    if os.name == "nt":
+        return {"creationflags": 0x00000008 | 0x00000200 | 0x08000000}  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+    return {"start_new_session": True}
 
 
 @contextlib.contextmanager
 def locked(sid):
     """Serialize read-modify-write of one session file across hook processes."""
     with open(session_path(sid) + ".lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        flock(lock)
         yield
 
 
@@ -116,7 +148,7 @@ def load_session(sid):
 
 
 def active(sess):
-    keys = ("hits", "misses", "proposals", "captures", "worker_captures", "comments", "selected")
+    keys = ("hits", "misses", "proposals", "captures", "worker_captures", "comments", "selected", "injected")
     return any(sess.get(k) for k in keys)
 
 
@@ -128,7 +160,36 @@ def in_vault(path):
 
 def vault_rel(path):
     """Vault-relative path of a file inside the vault, or None."""
-    return os.path.relpath(os.path.realpath(path), os.path.realpath(vault())) if in_vault(path) else None
+    if not in_vault(path):
+        return None
+    return os.path.relpath(os.path.realpath(path), os.path.realpath(vault())).replace(os.sep, "/")
+
+
+def take_errors():
+    """Move errors.json aside and return its counts. A count then goes into exactly one payload."""
+    path = os.path.join(data_dir(), "errors.json")
+    taken = "%s.%d" % (path, os.getpid())
+    try:
+        os.replace(path, taken)
+    except OSError:
+        return {}
+    counts = read_json(taken, {})
+    with contextlib.suppress(OSError):
+        os.remove(taken)
+    return counts if isinstance(counts, dict) else {}
+
+
+def restore_errors(counts):
+    """Add counts back to errors.json after a failed send. Never raises."""
+    try:
+        path = os.path.join(data_dir(), "errors.json")
+        now = read_json(path, {})
+        now = now if isinstance(now, dict) else {}
+        for key, n in counts.items():
+            now[key] = now.get(key, 0) + n
+        write_json(path, now)
+    except Exception:
+        pass
 
 
 def note_error(where, exc):

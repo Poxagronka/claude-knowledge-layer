@@ -1,7 +1,10 @@
 """The gitleaks config must not hide real secrets behind a global allowlist."""
 import re
-import tomllib
 from pathlib import Path
+
+import pytest
+
+tomllib = pytest.importorskip("tomllib")  # Python 3.11+
 
 CONFIG = Path(__file__).resolve().parent.parent / ".github" / "config" / "gitleaks.toml"
 

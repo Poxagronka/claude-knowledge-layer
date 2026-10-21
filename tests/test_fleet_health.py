@@ -22,6 +22,14 @@ def test_final_wins_over_later_interim():
     assert fh.sessions([interim, final], "2026-10-01T00:00:00Z") == [final]
 
 
+def test_resumed_session_keeps_each_start_and_dedupes_payloads():
+    final = p("s1", started_at="2026-10-17T09:00:00Z")
+    interim = p("s1", ended="2026-10-17T11:00:00Z", final=False,
+                started_at="2026-10-17T09:00:00Z")
+    resumed = p("s1", ended="2026-10-17T13:00:00Z", started_at="2026-10-17T12:00:00Z")
+    assert fh.sessions([final, interim, resumed], "2026-10-01T00:00:00Z") == [final, resumed]
+
+
 def test_latest_interim_wins_without_final():
     a = p("s1", ended="2026-10-17T10:00:00Z", final=False)
     b = p("s1", ended="2026-10-17T11:00:00Z", final=False)
