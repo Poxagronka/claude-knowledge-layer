@@ -1,4 +1,3 @@
-import fcntl
 import importlib.util
 import io
 import json
@@ -8,14 +7,19 @@ import stat
 import sys
 import tempfile
 import threading
+import time
+import types
 
 import pytest
 from conftest import write_config
+
+fcntl = pytest.importorskip("fcntl")  # POSIX-only module: sh stand-ins and Unix sockets
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN = os.path.join(ROOT, "plugins", "knowledge")
 sys.path.insert(0, os.path.join(PLUGIN, "scripts"))
 import local_rank as lr  # noqa: E402
+import plugin_state  # noqa: E402
 
 
 def load(name, path):
@@ -93,30 +97,43 @@ def session(data):
 
 def test_local_path_sends_only_ranker_candidates(env, capsys, monkeypatch):
     plugin, data, bin_dir = env
-    make_ready(plugin, data, "cat > /dev/null; echo '%s'" % GREY)
+    make_ready(plugin, data, "exit 1")
+    fake_daemon(GREY.encode())
     run(capsys, monkeypatch)
     sent = (bin_dir / "stdin.txt").read_text()
     assert "CANDIDATES (hubs and entries)" in sent and RULE_ID in sent
     assert "entities/service-example-service" not in sent
     assert "HUBS, one per line" not in (bin_dir / "args.txt").read_text()
-    assert session(data)["ranker"] == {"local": 1, "haiku": 1}
+    assert session(data)["ranker"] == {"local": 1, "haiku": 1, "warm": 1}
 
 
-@pytest.mark.parametrize("body", [
-    "cat > /dev/null; exit 1",
-    "cat > /dev/null; echo not-json",
-    'cat > /dev/null; echo \'{"ids": ["bogus#^X"]}\'',
-    'cat > /dev/null; echo \'{"ids": [], "pins": [], "scores": {"a": "high"}}\'',
-    "cat > /dev/null; sleep 5",
+@pytest.mark.parametrize("reply", [
+    b"not-json",
+    b'{"ids": ["bogus#^X"]}',
+    b'{"ids": [], "pins": [], "scores": {"a": "high"}}',
+    None,
 ])
-def test_ranker_failure_injects_named_hubs_with_no_model(env, capsys, monkeypatch, body):
+def test_ranker_failure_asks_haiku_about_hubs_with_the_named_hub_first(env, capsys, monkeypatch, reply):
     plugin, data, bin_dir = env
     monkeypatch.setattr(lr, "RANK_TIMEOUT", 0.3)
-    make_ready(plugin, data, body)
+    make_ready(plugin, data, "exit 1")
+    script(bin_dir / "claude", 'cat > %s/stdin.txt; echo \'{"need": 3, "picks": [{"id": "entities/service-example-service", "s": 3}]}\'' % bin_dir)
+    if reply is not None:
+        fake_daemon(reply)
+    out = run(capsys, monkeypatch)
+    sent = (bin_dir / "stdin.txt").read_text()
+    assert "### [3] entities/service-example-service" in out and "Claude Haiku rated" in out
+    assert "entities/service-example-service" in sent and RULE_ID not in sent
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1}
+
+
+def test_ranker_and_haiku_failure_inject_named_hubs_only(env, capsys, monkeypatch):
+    plugin, data, bin_dir = env
+    make_ready(plugin, data, "exit 1")
+    script(bin_dir / "claude", "exit 1")
     out = run(capsys, monkeypatch)
     assert "### [3] entities/service-example-service" in out and RULE_ID not in out
-    assert not (bin_dir / "stdin.txt").exists()
-    assert session(data)["ranker"] == {"fallback": 1}
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1} and session(data)["select_fail"] == 1
 
 
 def test_missing_stamp_falls_back(env, capsys, monkeypatch):
@@ -124,7 +141,7 @@ def test_missing_stamp_falls_back(env, capsys, monkeypatch):
     make_ready(plugin, data, "echo '%s'" % HIGH)
     (data / "runtime.stamp").unlink()
     run(capsys, monkeypatch)
-    assert session(data)["ranker"] == {"fallback": 1}
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
 def test_changed_vault_needs_new_vectors(env, capsys, monkeypatch):
@@ -133,7 +150,7 @@ def test_changed_vault_needs_new_vectors(env, capsys, monkeypatch):
     (plugin / "vault" / "api" / "rules.md").write_text(RULE + "\nmore\n")
     assert not lr.ready(str(plugin / "vault"))
     run(capsys, monkeypatch)
-    assert session(data)["ranker"] == {"fallback": 1}
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
 def test_opt_out_env_forces_fallback(env, capsys, monkeypatch):
@@ -141,7 +158,7 @@ def test_opt_out_env_forces_fallback(env, capsys, monkeypatch):
     make_ready(plugin, data, "echo '%s'" % HIGH)
     monkeypatch.setenv(lr.OPT_OUT_ENV, "0")
     run(capsys, monkeypatch)
-    assert session(data)["ranker"] == {"fallback": 1}
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
 @pytest.fixture
@@ -156,7 +173,8 @@ def test_ensure_spawns_detached_installer_when_missing(env, popen):
     lr.ensure(str(plugin / "vault"))
     assert len(popen) == 1
     cmd, kw = popen[0]
-    assert cmd[1].endswith(os.path.join("runtime", "install.py")) and kw["start_new_session"] is True
+    assert cmd[-1].endswith(os.path.join("runtime", "install.py")) and cmd[1:3] == ["-X", "utf8"]
+    assert all(kw[k] == v for k, v in plugin_state.detached().items())
 
 
 def test_ensure_skips_when_ready_opted_out_or_failed_recently(env, popen, monkeypatch):
@@ -179,6 +197,7 @@ def test_ensure_skips_when_ready_opted_out_or_failed_recently(env, popen, monkey
 
 def test_unsupported_platform_is_disabled(monkeypatch):
     monkeypatch.setattr(lr.sys, "platform", "linux")
+    monkeypatch.setenv(lr.OPT_OUT_ENV, "1")
     assert not lr.enabled()
 
 
@@ -247,30 +266,36 @@ def fake_daemon(reply):
     return seen
 
 
-def test_warm_daemon_answers_without_one_shot(env, capsys, monkeypatch):
+def test_warm_daemon_answers(env, capsys, monkeypatch):
     plugin, data, _ = env
-    make_ready(plugin, data, "exit 1")  # the one-shot would fail, so only the daemon can answer
+    make_ready(plugin, data, "exit 1")
     seen = fake_daemon(HIGH.encode())
     run(capsys, monkeypatch)
     assert json.loads(seen[0])["prompt"] == PROMPT
     assert session(data)["ranker"] == {"local": 1, "haiku": 1, "warm": 1} and SPAWNED == []
 
 
-def test_absent_daemon_spawns_one_and_ranks_one_shot(env, capsys, monkeypatch):
+def test_absent_daemon_spawns_one_and_never_loads_models_in_process(env, capsys, monkeypatch):
     plugin, data, _ = env
-    make_ready(plugin, data, "cat > /dev/null; echo '%s'" % HIGH)
+    make_ready(plugin, data, "exit 1")
+
+    def no_run(*a, **kw):
+        raise AssertionError("subprocess.run must not be called")
+    monkeypatch.setattr(lr.subprocess, "run", no_run)
+    assert lr.rank(PROMPT, set()) is None
+    assert SPAWNED == [1]
     run(capsys, monkeypatch)
-    assert SPAWNED == [1] and session(data)["ranker"] == {"local": 1, "haiku": 1}
+    assert SPAWNED == [1, 1] and session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
-def test_stale_socket_file_spawns_and_ranks_one_shot(env, capsys, monkeypatch):
+def test_stale_socket_file_spawns_and_falls_back(env, capsys, monkeypatch):
     plugin, data, _ = env
-    make_ready(plugin, data, "cat > /dev/null; echo '%s'" % HIGH)
+    make_ready(plugin, data, "exit 1")
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stale.bind(lr.sock_path())
     stale.close()  # the file stays, nobody listens
     run(capsys, monkeypatch)
-    assert SPAWNED == [1] and session(data)["ranker"] == {"local": 1, "haiku": 1}
+    assert SPAWNED == [1] and session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
 @pytest.mark.parametrize("reply", [b"not json", b'{"ids": [1]}', b'{"ids": []}'])
@@ -279,15 +304,28 @@ def test_garbage_daemon_reply_falls_back_without_spawn(env, capsys, monkeypatch,
     make_ready(plugin, data, "cat > /dev/null; echo '%s'" % HIGH)
     fake_daemon(reply)
     run(capsys, monkeypatch)
-    assert SPAWNED == [] and session(data)["ranker"] == {"fallback": 1}
+    assert SPAWNED == [] and session(data)["ranker"] == {"fallback": 1, "haiku": 1}
 
 
-def test_daemon_error_reply_drops_socket_and_respawns(env, capsys, monkeypatch):
+def test_daemon_error_reply_leaves_cleanup_to_daemon(env, capsys, monkeypatch):
     plugin, data, _ = env
-    make_ready(plugin, data, "cat > /dev/null; echo '%s'" % HIGH)
+    make_ready(plugin, data, "exit 1")
     fake_daemon(b'{"error": "boom"}')
     run(capsys, monkeypatch)
-    assert SPAWNED == [1] and not os.path.exists(lr.sock_path()) and session(data)["ranker"] == {"local": 1, "haiku": 1}
+    assert SPAWNED == [1] and os.path.exists(lr.sock_path()) and session(data)["ranker"] == {"fallback": 1, "haiku": 1}
+
+
+def test_connect_refused_preserves_live_daemon_socket(env, monkeypatch):
+    def refused(_request):
+        raise ConnectionRefusedError(61, "backlog full")
+
+    monkeypatch.setattr(lr, "ask_daemon", refused)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+        srv.bind(lr.sock_path())
+        srv.listen(4)
+        assert lr.rank("prompt", set()) is None
+        assert os.path.exists(lr.sock_path())
+        assert SPAWNED == [1]
 
 
 def test_socket_name_ignores_plugin_root(env, monkeypatch):
@@ -307,6 +345,8 @@ def test_install_state(env, monkeypatch):
     vault = str(plugin / "vault")
     monkeypatch.setattr(lr.sys, "platform", "darwin")
     monkeypatch.setattr(lr.platform, "machine", lambda: "arm64")
+    assert lr.install_state(vault) == "off"  # opt-in
+    monkeypatch.setenv(lr.OPT_OUT_ENV, "1")
     assert lr.install_state(vault) == "installing"
     (data / "install.failed").write_text("old stamp")  # a failure of another version is not a failure now
     assert lr.install_state(vault) == "installing"
@@ -316,6 +356,7 @@ def test_install_state(env, monkeypatch):
     assert lr.install_state(vault) == "ready"
     monkeypatch.setattr(lr.platform, "machine", lambda: "x86_64")
     assert lr.install_state(vault) == "unsupported"
+    monkeypatch.setattr(lr.platform, "machine", lambda: "arm64")
     monkeypatch.setenv(lr.OPT_OUT_ENV, "off")
     assert lr.install_state(vault) == "off"
 
@@ -362,3 +403,104 @@ def test_prune_vectors_ignores_tmp_files(tmp_path, monkeypatch):
     install.prune_vectors("vectors-cur.npz")
     assert (tmp_path / "vectors-x.npz.tmp.npz").exists()
     assert not (tmp_path / "vectors-a.npz").exists()
+
+
+@pytest.fixture
+def rank_mod(env, monkeypatch):
+    """rank.py with stub numpy/onnxruntime/tokenizers and no models, so serve() runs without the runtime venv."""
+    for name in ("numpy", "onnxruntime", "tokenizers"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    sys.modules["tokenizers"].Tokenizer = object
+    mod = load("rank_under_test", os.path.join(PLUGIN, "runtime", "rank.py"))
+    for name in ("vault_state", "model"):
+        monkeypatch.setattr(mod, name, lambda *a, **kw: None)
+    monkeypatch.setattr(mod, "STAMP_CHECK_SECONDS", 0.05)
+    return mod
+
+
+def start_daemon(mod, plugin):
+    result = []
+    thread = threading.Thread(target=lambda: result.append(mod.serve(str(plugin / "vault"))), daemon=True)
+    thread.start()
+    for _ in range(200):
+        if os.path.exists(lr.sock_path()):
+            break
+        time.sleep(0.01)
+    return thread, result
+
+
+def ask(payload=b'{"prompt": "x"}\n'):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as cli:
+        cli.settimeout(5)
+        for _ in range(200):  # the socket file appears at bind(), a moment before listen()
+            try:
+                cli.connect(lr.sock_path())
+                break
+            except ConnectionRefusedError:
+                time.sleep(0.01)
+        else:
+            cli.connect(lr.sock_path())
+        cli.sendall(payload)
+        return json.loads(cli.recv(65536) or b"null")
+
+
+def test_daemon_exits_and_frees_lock_after_failed_request(env, rank_mod, monkeypatch):
+    plugin, data, _ = env
+    make_ready(plugin, data, "exit 1")
+    monkeypatch.setattr(rank_mod, "answer", lambda *a: 1 / 0)
+    thread, result = start_daemon(rank_mod, plugin)
+    assert "error" in ask()
+    thread.join(5)
+    assert result == [0] and not os.path.exists(lr.sock_path())
+    with open(lr.sock_path() + ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if the dead daemon still holds the lock
+
+
+def test_daemon_exits_when_runtime_stamp_changes(env, rank_mod, monkeypatch):
+    plugin, data, _ = env
+    make_ready(plugin, data, "exit 1")
+    monkeypatch.setattr(rank_mod, "IDLE_SECONDS", 3600)
+    thread, result = start_daemon(rank_mod, plugin)
+    time.sleep(0.2)
+    assert thread.is_alive()
+    (data / "runtime.stamp").write_text("newer-generation")
+    thread.join(5)
+    assert result == [0] and not os.path.exists(lr.sock_path())
+
+
+def test_daemon_idle_exit_tolerates_missing_socket_file(env, rank_mod, monkeypatch):
+    plugin, data, _ = env
+    make_ready(plugin, data, "exit 1")
+    monkeypatch.setattr(rank_mod, "IDLE_SECONDS", 0.1)
+    thread, result = start_daemon(rank_mod, plugin)
+    os.unlink(lr.sock_path())
+    thread.join(5)
+    assert result == [0]
+
+
+def test_daemon_skips_expired_deadline_and_answers_the_rest(env, rank_mod, monkeypatch):
+    plugin, data, _ = env
+    make_ready(plugin, data, "exit 1")
+    monkeypatch.setattr(rank_mod, "IDLE_SECONDS", 3600)
+    calls = []
+    monkeypatch.setattr(rank_mod, "answer", lambda vault, raw: calls.append(raw) or {"ids": []})
+    thread, _ = start_daemon(rank_mod, plugin)
+    try:
+        assert ask(json.dumps({"prompt": "x", "deadline": time.time() - 1}).encode() + b"\n") is None
+        assert calls == []
+        assert ask(json.dumps({"prompt": "x", "deadline": time.time() + 60}).encode() + b"\n") == {"ids": []}
+        assert ask() == {"ids": []}  # old client: no deadline
+        assert len(calls) == 2
+    finally:
+        # Stop the daemon before env teardown: a leaked thread would unlink the next test's socket path.
+        (data / "runtime.stamp").unlink(missing_ok=True)
+        thread.join(5)
+        assert not thread.is_alive()
+
+
+def test_client_request_carries_a_deadline(env, monkeypatch):
+    sent = []
+    monkeypatch.setattr(lr, "ask_daemon", lambda request: sent.append(json.loads(request)) or None)
+    before = time.time()
+    lr.rank("p", set())
+    assert before + lr.RANK_TIMEOUT <= sent[0]["deadline"] <= time.time() + lr.RANK_TIMEOUT

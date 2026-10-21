@@ -4,7 +4,6 @@
 Every subcommand fails open: any error prints nothing and exits 0.
 """
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -18,6 +17,7 @@ import config  # noqa: E402
 import local_rank  # noqa: E402
 import issue_queue  # noqa: E402
 import select_stats  # noqa: E402
+import tool_hubs  # noqa: E402
 from privacy import SENSITIVE  # noqa: E402
 from plugin_state import (  # noqa: E402,F401
     CAPTURE_ENV,
@@ -27,6 +27,8 @@ from plugin_state import (  # noqa: E402,F401
     active,
     capture_off,
     data_dir,
+    detached,
+    flock,
     in_vault,
     load_session,
     locked,
@@ -38,8 +40,10 @@ from plugin_state import (  # noqa: E402,F401
     read_json,
     repo,
     remove_session,
+    restore_errors,
     root,
     session_path,
+    take_errors,
     vault,
     vault_rel,
     write_json,
@@ -64,7 +68,7 @@ def idle_locked():
         held = False
         for _ in range(10):
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(lock, wait=False)
                 held = True
                 break
             except OSError:
@@ -95,6 +99,47 @@ def _segments(cmd):
     return segs
 
 
+PS_READ_CMDS = {"get-content", "gc", "cat", "type", "more"}
+WIN_DRIVE_RE = re.compile(r"^(?:([A-Za-z]):[\\/]|/([A-Za-z])/)")
+PS_TOKEN_RE = re.compile(r"\"[^\"]*\"|'[^']*'|[|;]|[^\s|;]+")
+
+
+def absolute_path(path):
+    """Absolute form of path, or None. On Windows, C:\\x, C:/x and /c/x count as absolute."""
+    if os.name == "nt":
+        m = WIN_DRIVE_RE.match(path)
+        if m:
+            return (m.group(1) or m.group(2)).upper() + ":/" + path[m.end():]
+    return path if os.path.isabs(path) else None
+
+
+def _ps_segments(cmd):
+    """Split a PowerShell command into (words, piped) segments. Backslashes stay literal."""
+    segs, words = [], []
+    for tok in PS_TOKEN_RE.findall(cmd.replace("\n", " ; ")):
+        if tok in (";", "|"):
+            segs.append((words, tok == "|"))
+            words = []
+        else:
+            words.append(tok[1:-1] if len(tok) > 1 and tok[0] == tok[-1] and tok[0] in "\"'" else tok)
+    segs.append((words, False))
+    return segs
+
+
+def powershell_reads(cmd):
+    """(vault-relative file, fully read) pairs for Get-Content/cat/type segments of a PowerShell command."""
+    found = []
+    for words, piped in _ps_segments(cmd):
+        if not words or words[0].lower() not in PS_READ_CMDS:
+            continue
+        full = not piped and not any(w.lower() in ("-tail", "-totalcount", "-head", "-first") for w in words)
+        for w in words[1:]:
+            path = absolute_path(os.path.expanduser(w)) if w.lower().endswith(".md") else None
+            if path and in_vault(path) and os.path.isfile(path):
+                found.append((vault_rel(path), full))
+    return found
+
+
 def bash_reads(cmd):
     """(vault-relative file, fully read) pairs for cat/head/sed/less/bat segments of a command."""
     segs = _segments(cmd)
@@ -114,7 +159,9 @@ def bash_reads(cmd):
         for w in words[1:]:
             if w.endswith(".md"):
                 path = os.path.expanduser(VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), w))
-                if os.path.isabs(path) and in_vault(path):
+                # Only a real file counts: a loop variable, glob, brace or free text is no read.
+                path = absolute_path(path)
+                if path and in_vault(path) and os.path.isfile(path):
                     found.append((vault_rel(path), full))
     return found
 
@@ -137,15 +184,19 @@ def stale_target(cmd):
     return ident.rsplit("/", 1)[-1] if ident.startswith("entities/") else ident
 
 
+UUID_RE = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
+
+
 def zero_matches(resp):
-    # The one shape seen live: {"mode": "content", "numFiles": 0, "filenames": [], ...}
-    return isinstance(resp, dict) and resp.get("numFiles") == 0
+    # Content mode always reports numFiles 0 and filenames [], with the hits in "content".
+    return (isinstance(resp, dict) and resp.get("numFiles") == 0 and not resp.get("filenames")
+            and not str(resp.get("content") or "").strip() and not resp.get("numLines"))
 
 
 def spawn_sender(path, mode="send"):
     subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), mode, path],
-        start_new_session=True,
+        [sys.executable, "-X", "utf8", os.path.abspath(__file__), mode, path],
+        **detached(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -214,6 +265,7 @@ def session_start(event):
             sess["before_compact"] = sess.get("shown", [])
             sess["shown"] = []
             sess["read_files"] = []
+            sess.get("shown_tool", {}).pop("main", None)
             write_json(session_path(sid), sess)
     sweep_sessions(sid)
 
@@ -230,13 +282,35 @@ def note_reads(sess, reads):
                 sess["reread_after_compact"] = sess.get("reread_after_compact", 0) + 1
 
 
+def touches_vault(tool, inp):
+    """True when the tool call reads or searches the vault itself."""
+    if tool in ("Bash", "PowerShell"):
+        reads = powershell_reads if tool == "PowerShell" else bash_reads
+        return bool(reads(str(inp.get("command", ""))))
+    return bool(tool in ("Read", "Grep") and (inp.get("file_path") or inp.get("path")) and in_vault(inp.get("file_path") or inp["path"]))
+
+
 def track(event):
-    if opted_out():
-        return
     sid = event["session_id"]
-    with contextlib.suppress(OSError):
-        # A live session must never look stale to the sweep in session_start.
-        os.utime(session_path(sid))
+    if not opted_out():
+        with contextlib.suppress(OSError):
+            # A live session must never look stale to the sweep in session_start.
+            os.utime(session_path(sid))
+        track_usage(event)
+    if not touches_vault(event.get("tool_name"), event.get("tool_input") or {}):
+        out = tool_hubs.on_tool(event)
+        if out:
+            print(out)
+
+
+def subagent_start(event):
+    out = tool_hubs.on_subagent_start(event)
+    if out:
+        print(out)
+
+
+def track_usage(event):
+    sid = event["session_id"]
     tool, inp = event.get("tool_name"), event.get("tool_input") or {}
     reads = []
     pat = None
@@ -244,8 +318,8 @@ def track(event):
     stale = None
     if tool == "Read":
         target = inp.get("file_path") or ""
-        if not (target and in_vault(target)):
-            return
+        if event.get("agent_id") or not (target and in_vault(target) and os.path.isfile(target)):
+            return  # a subagent read is no miss against the main turn
         reads = [(vault_rel(target), "offset" not in inp and "limit" not in inp)]
     elif tool == "Grep":
         if not (inp.get("path") and in_vault(inp["path"])):
@@ -255,9 +329,13 @@ def track(event):
         pat = str(inp.get("pattern", ""))[:100]
         if not pat or SENSITIVE.search(pat):
             return
+    elif tool == "PowerShell":
+        reads = [] if event.get("agent_id") else powershell_reads(str(inp.get("command", "")))
+        if not reads:
+            return
     elif tool == "Bash":
         cmd = str(inp.get("command", ""))
-        reads = bash_reads(cmd)
+        reads = [] if event.get("agent_id") else bash_reads(cmd)
         if "gh issue create" in cmd:
             proposal = "knowledge-proposal" in cmd
             capture = re.search(r"--label[ =]capture\b", cmd) is not None
@@ -375,8 +453,13 @@ def send(path, final=True):
             os.rename(path, sending)
     except OSError:
         return
+    errors, posted = {}, False
     try:
         sess = read_json(sending, {})
+        if not UUID_RE.fullmatch(str(sess.get("session_id"))):
+            # A hand-run hook (fake id) must not post to the live telemetry issue.
+            remove_session(sending)
+            return
         if not active(sess):
             # An empty session left by a crash: count it as idle, send nothing.
             remove_session(sending)
@@ -384,9 +467,9 @@ def send(path, final=True):
             return
         idle_path = os.path.join(data_dir(), "idle.json")
         idle = read_json(idle_path, 0)
-        errors_path = os.path.join(data_dir(), "errors.json")
+        errors = take_errors()  # this send owns these counts: a parallel or later send cannot report them again
         payload = {
-            "schema": 10,
+            "schema": 11,
             "final": final,
             "session_id": sess.get("session_id"),
             "started_at": sess.get("started_at"),
@@ -407,22 +490,24 @@ def send(path, final=True):
             "reread_after_compact": sess.get("reread_after_compact", 0),
             "reinjected_after_compact": sess.get("reinjected_after_compact", 0),
             "idle_sessions_since_last": idle,
-            "errors": read_json(errors_path, {}),
+            "errors": errors,
         }
         payload.update(select_stats.fields(sess, vault()))
         login = issue_queue.gh("api", "user", "--jq", ".login")
         number = find_issue(login, target)
         body = "```json\n%s\n```" % json.dumps(payload, indent=2)
         issue_queue.gh("issue", "comment", str(number), "-R", target, "--body", body)
+        posted = True
         if final:
             # Reset first: a failed write must still find `sending` to rename back.
             with idle_locked() as held:
                 if held:
                     # Subtract the sent count: bumps made during the network call survive.
                     write_json(idle_path, max(read_json(idle_path, 0) - idle, 0))
-            write_json(errors_path, {})
             remove_session(sending)
     except Exception:
+        if not posted:
+            restore_errors(errors)
         if final:
             os.rename(sending, path)
             # Wait another stale period before the next sweep retries.
@@ -452,7 +537,7 @@ def main(argv):
             send(argv[1], final=False)
             return 0
         event = json.load(sys.stdin)
-        {"session-start": session_start, "session-end": session_end, "pre-compact": pre_compact, "track": track, "stop": stop}[cmd](event)
+        {"session-start": session_start, "session-end": session_end, "pre-compact": pre_compact, "track": track, "stop": stop, "subagent-start": subagent_start}[cmd](event)
     except Exception as exc:
         note_error(argv[0] if argv else "main", exc)
     return 0

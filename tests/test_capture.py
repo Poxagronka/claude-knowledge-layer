@@ -2,6 +2,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -212,8 +214,8 @@ def test_worker_offset_advances_only_on_exit_zero(env, monkeypatch, tmp_path):
     hook.main(["capture-worker", SID, str(tr)])
     assert json.loads(offset.read_text()) == tr.stat().st_size
     cmd, kw = calls[-1]
-    assert cmd[:4] == ["claude", "-p", "--model", "haiku"] and kw["env"][hook.WORKER_ENV] == "1"
-    assert kw["env"][hook.CAPTURE_ENV] == "0" and kw["cwd"].endswith("capture/work")
+    assert cmd[0] == (shutil.which("claude") or "claude") and cmd[1:4] == ["-p", "--model", "haiku"] and kw["env"][hook.WORKER_ENV] == "1"
+    assert kw["env"][hook.CAPTURE_ENV] == "0" and kw["cwd"].replace("\\", "/").endswith("capture/work")
     prompt = kw["input"]
     assert "Vendorx bid floor" in prompt and "0.5 USD" in prompt and "RESULT" in prompt
     log = (data / "capture" / "worker.log").read_text().splitlines()
@@ -336,7 +338,10 @@ def test_worker_without_queue_line_writes_nothing(env, monkeypatch, tmp_path):
 def test_worker_command_scopes_reads_to_plugin_root(env):
     cmd = capture.capture_command()
     tools = cmd[cmd.index("--allowedTools") + 1].split(",")
-    scope = "//" + hook.root().lstrip("/")
+    path = hook.root().replace("\\", "/")
+    if re.match(r"[A-Za-z]:/", path):
+        path = path[0].lower() + path[2:]  # Windows: C:\x becomes /c/x
+    scope = "//" + path.lstrip("/")
     assert "Read" not in tools and "Grep" not in tools
     assert "Read(%s/vault/**)" % scope in tools and "Read(%s/skills/**)" % scope in tools
     assert "Grep(%s/vault/**)" % scope in tools
@@ -472,6 +477,7 @@ def test_detached_launchers_re_run_hook_py(monkeypatch):
     hook.spawn_sender("/q", "flush")
     worker, sender = started
     hook_py = os.path.join(SCRIPTS, "hook.py")
-    assert worker[0][1:] == [hook_py, "capture-worker", "s1", "/t.jsonl", "volume"]
-    assert sender[0][1:] == [hook_py, "flush", "/q"]
-    assert worker[1]["start_new_session"] and sender[1]["start_new_session"]
+    assert worker[0][1:] == ["-X", "utf8", hook_py, "capture-worker", "s1", "/t.jsonl", "volume"]
+    assert sender[0][1:] == ["-X", "utf8", hook_py, "flush", "/q"]
+    for kw in (worker[1], sender[1]):
+        assert kw.items() >= hook.detached().items()

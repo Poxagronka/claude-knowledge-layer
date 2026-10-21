@@ -1,4 +1,3 @@
-import fcntl
 import os
 import subprocess
 import sys
@@ -8,6 +7,8 @@ import pytest
 from test_hook import ROOT, SID, fake_gh, hook, read_event, run
 from test_hook import env as hook_env  # noqa: F401
 
+fcntl = pytest.importorskip("fcntl")  # POSIX-only module
+
 
 BUMPS = (
     "import importlib.util, sys\n"
@@ -15,6 +16,8 @@ BUMPS = (
     "hook = importlib.util.module_from_spec(spec)\n"
     "sys.modules['hook'] = hook\n"
     "spec.loader.exec_module(hook)\n"
+    "real_flock = hook.flock\n"
+    "hook.flock = lambda fh, wait=False: real_flock(fh, wait=True)\n"
     "for _ in range(20):\n"
     "    hook.bump_idle()\n"
 )
@@ -76,3 +79,9 @@ def test_send_keeps_idle_bumps_made_during_the_network_call(env, monkeypatch):
     monkeypatch.setattr(hook.subprocess, "run", during)
     hook.send(str(data / "sessions" / (SID + ".json")))
     assert hook.read_json(str(data / "idle.json"), -1) == 1
+
+
+def test_native_read_of_missing_vault_file_not_recorded(env, monkeypatch):
+    plugin, data, _ = env
+    run("track", read_event(plugin / "vault" / "missing.md"), monkeypatch)
+    assert not (data / "sessions" / (SID + ".json")).exists()

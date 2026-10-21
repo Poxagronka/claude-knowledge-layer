@@ -115,10 +115,11 @@ def test_dry_run_preserves_all_bytes(template):
         "--maintainer", "sample-maintainer", "--root-hub", "team-example",
     )
     assert snapshot(template) == before
-    assert "Would update plugins/knowledge/knowledge.json" in result.stdout
-    assert "Would update .claude-plugin/marketplace.json" in result.stdout
-    assert "Would update .github/CODEOWNERS" in result.stdout
-    assert "Next steps:" in result.stdout
+    out = result.stdout.replace("\\", "/")  # Windows prints backslashes
+    assert "Would update plugins/knowledge/knowledge.json" in out
+    assert "Would update .claude-plugin/marketplace.json" in out
+    assert "Would update .github/CODEOWNERS" in out
+    assert "Next steps:" in out
 
 
 def test_repeated_adaptation_is_idempotent(template):

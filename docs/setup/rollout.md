@@ -83,7 +83,7 @@ Share a short note. It should say:
 - What the plugin does and that it is the shared knowledge vault.
 - That Claude reads vault entries and that the selector sends the prompt and candidate entries to Claude Haiku.
 - That the plugin files issues to the private issues repo, and what telemetry holds.
-- The opt-out variables: `KNOWLEDGE_TELEMETRY=0`, `KNOWLEDGE_CAPTURE=0`, `KNOWLEDGE_SELECT=0`, `KNOWLEDGE_LOCAL=0`, `KNOWLEDGE_AUTOUPDATE=0`.
+- The opt-out variables: `KNOWLEDGE_TELEMETRY=0`, `KNOWLEDGE_CAPTURE=0`, `KNOWLEDGE_SELECT=0`, `KNOWLEDGE_AUTOUPDATE=0`. The local ranker is opt-in: `KNOWLEDGE_LOCAL=1` turns it on.
 - How to propose a fix: the issue form, or ask Claude to file a proposal.
 - Where to report a problem with the plugin.
 

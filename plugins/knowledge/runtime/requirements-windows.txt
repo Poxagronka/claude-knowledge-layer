@@ -1,0 +1,15 @@
+# Pinned for Windows x64 (win_amd64) on CPython 3.11 to 3.14. One hash per wheel, so pip picks the one
+# that matches the user's Python. The macOS arm64 pins live in requirements.txt. Install with:
+#   pip install --require-hashes --no-deps --only-binary=:all: -r requirements-windows.txt
+onnxruntime==1.24.4 \
+    --hash=sha256:b43b63eb24a2bc8fc77a09be67587a570967a412cccb837b6245ccb546691153 \
+    --hash=sha256:535b29475ca42b593c45fbb2152fbf1cdf3f287315bf650e6a724a0a1d065cdb \
+    --hash=sha256:3b6ba8b0181a3aa88edab00eb01424ffc06f42e71095a91186c2249415fcff93 \
+    --hash=sha256:311e309f573bf3c12aa5723e23823077f83d5e412a18499d4485c7eb41040858
+numpy==2.4.6 \
+    --hash=sha256:1e254a00cdf42b1e4d5b3d68d33af63268d41340d8885df2ab6470f2e1500147 \
+    --hash=sha256:d8e8286dd7cea7895157318d1b91cdacac64c479f3cbc8dce548331728484751 \
+    --hash=sha256:c4fc99836233ea196540b17ab0983aff60ed07941751930f5f4d05bc3b3b7359 \
+    --hash=sha256:b507f5c4c1d508876d1819b6bf9a49d365b96320b5d4993426b33a23ca4b8261
+tokenizers==0.22.2 \
+    --hash=sha256:c9ea31edff2968b44a88f97d784c2f16dc0729b8b143ed004699ebca91f05c48

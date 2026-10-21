@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -45,8 +46,8 @@ def spawn_worker_if(sid, transcript, reason, min_bytes):
 
 def spawn_worker(sid, transcript, reason):
     subprocess.Popen(
-        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "hook.py"), "capture-worker", sid, transcript, reason],
-        start_new_session=True,
+        [sys.executable, "-X", "utf8", os.path.join(os.path.dirname(os.path.abspath(__file__)), "hook.py"), "capture-worker", sid, transcript, reason],
+        **plugin_state.detached(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -168,12 +169,15 @@ def capture_prompt(turns):
 
 def capture_command():
     gh = "Bash(gh issue %s:*)"
-    # Absolute paths need the // prefix in permission rules.
-    scope = "//" + plugin_state.root().lstrip("/")
+    # Absolute paths need the // prefix in permission rules. On Windows, C:\x becomes /c/x.
+    path = plugin_state.root().replace("\\", "/")
+    if re.match(r"[A-Za-z]:/", path):
+        path = path[0].lower() + path[2:]
+    scope = "//" + path.lstrip("/")
     tools = ["Read(%s/vault/**)" % scope, "Read(%s/skills/**)" % scope,
              "Grep(%s/vault/**)" % scope, "Grep(%s/skills/**)" % scope, gh % "list"]
     return [
-        "claude", "-p", "--model", CAPTURE_MODEL, "--permission-mode", "dontAsk",
+        shutil.which("claude") or "claude", "-p", "--model", CAPTURE_MODEL, "--permission-mode", "dontAsk",
         "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
         "--disable-slash-commands", "--add-dir", plugin_state.root(), plugin_state.data_dir(), "--allowedTools", ",".join(tools),
     ]

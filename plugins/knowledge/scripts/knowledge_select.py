@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: pick the vault entries a prompt needs and print them.
 
-The local ranker (local_rank.py) scores the vault. A top score <= LOW_SCORE with no hub named in the prompt
-(pin) injects nothing, with no model call. Every other prompt goes to a nested `claude -p` call with Haiku.
-Haiku sees the ranker's first GREY_CANDIDATES candidates (pins first) and rates the prompt NEED (0-3) and each
-candidate (s 0-3). NEED <= 1 injects nothing, else picks with s >= 2 print (s=3 first, max 6).
+By default Haiku rates the FULL catalog (every hub and entry) on every OS. The static catalog sits in a
+--system-prompt-file named by the catalog hash (select-<hash>.txt in CLAUDE_PLUGIN_DATA), so it caches. The user turn
+holds the prompt, the hubs named in it and the ids already shown. Haiku rates the prompt NEED (0-3) and each
+candidate (s 0-3). NEED <= 1 injects nothing, else picks with s >= 2 print (s=3 first, max 6). A bare hub slug
+(`example-service` for `entities/example-service`) counts as the hub id.
 Small picks print whole and big picks share the rest of the budget, so one big hub cannot hide the others.
-Without a ranker reply only hubs named in the prompt inject. After MAX_FAILS model failures in a row the
+If the Haiku call fails, only the hubs named in the prompt inject. After MAX_FAILS model failures in a row the
 model pauses for FAIL_PAUSE seconds. Each id shows once per window: a file Claude read in full counts as shown.
+Opt-in: with KNOWLEDGE_LOCAL=1 on a supported platform the local ranker (local_rank.py) scores the vault
+first. A top score <= LOW_SCORE with no hub named in the prompt (pin) injects nothing, with no model call. Otherwise
+Haiku sees the ranker's first GREY_CANDIDATES candidates (pins first) and rates only those.
 Every entry prints inside a <vault-entry> fence, and the fence tags are stripped from entry text.
 
 Fails open: any error prints nothing and exits 0. Stdlib only, Python 3.9.
 """
+import glob
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,11 +33,21 @@ import hook  # noqa: E402
 import local_rank  # noqa: E402
 import select_stats  # noqa: E402
 import switches  # noqa: E402
+from vault_hubs import (  # noqa: E402,F401
+    FENCE_RE,
+    PREVIEW,
+    SELECT_OPT_OUT_ENV as OPT_OUT_ENV,
+    clean,
+    fence,
+    hub_record,
+    record,
+    split_frontmatter,
+    whole_word,
+)
 
 MODEL = "claude-haiku-5-5"
 NESTED = "KNOWLEDGE_SELECT_NESTED"
 FAST = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-OPT_OUT_ENV = "KNOWLEDGE_SELECT"
 TIMEOUT_ENV = "KNOWLEDGE_SELECT_TIMEOUT"
 MIN_PROMPT = 10
 MAX_TIMEOUT = 20
@@ -38,7 +55,6 @@ TOTAL_BUDGET = 25  # ranker plus Haiku, under the 30 s hook limit
 MAX_FAILS = 2
 FAIL_PAUSE = 600  # seconds the model stays off after MAX_FAILS failures in a row
 PROMPT_CHARS = 4000
-PREVIEW = 200
 PICKS = 6
 MIN_NEED = 2
 MIN_S = 2
@@ -47,22 +63,6 @@ GREY_CANDIDATES = 12
 BUDGET = 8700
 SKIP_FILES = ("_index.md", "_template.md", "_graveyard.md")
 META_RE = re.compile(r"\s\^([A-Za-z0-9-]+)\s*$")
-
-def whole_word(term, text):
-    return re.search(r"(?<!\w)%s(?!\w)" % re.escape(term.lower()), text) is not None
-
-
-def clean(text):
-    return " ".join(re.sub(r"[#*`>]|^\s*-\s", " ", text).split())
-
-
-def split_frontmatter(text):
-    """Return (frontmatter lines, body) of a note."""
-    if text.startswith("---\n") and "\n---" in text[4:]:
-        head, _, body = text[4:].partition("\n---")
-        return head.splitlines(), body.lstrip("-").lstrip("\n")
-    return [], text
-
 
 def parse_entries(rel, lines):
     """Yield (id, title, text) for each entry: a heading or bullet followed by a `^id` meta line."""
@@ -95,7 +95,7 @@ def load_candidates(vault_dir):
             if not name.endswith(".md") or name in SKIP_FILES:
                 continue
             path = os.path.join(base, name)
-            rel = os.path.relpath(path, vault_dir)[:-3]
+            rel = os.path.relpath(path, vault_dir)[:-3].replace(os.sep, "/")
             try:
                 with open(path, encoding="utf-8") as fh:
                     front, body = split_frontmatter(fh.read())
@@ -107,31 +107,6 @@ def load_candidates(vault_dir):
             except Exception:
                 continue
     return entries, hubs
-
-
-def record(ident, title, text):
-    body = text.split("\n", 1)[1] if "\n" in text else ""
-    return {
-        "id": ident, "title": title, "text": text,
-        "preview": clean(body)[:PREVIEW],
-    }
-
-
-def hub_record(rel, front, body):
-    slug = rel.split("/", 1)[1]
-    first = next((ln for ln in body.splitlines() if ln.startswith("# ")), slug)
-    title = clean(first)
-    rest = body.split("\n", 1)[1] if "\n" in body else ""
-    rec = record(rel, title, body)
-    rec["preview"] = clean(rest)[:PREVIEW]
-    names = [title, re.sub(r"^[a-z]+-", "", slug).replace("-", " ")]
-    for ln in front:
-        if ln.startswith("aliases:"):
-            names += [a.strip().strip("'\"") for a in ln.split(":", 1)[1].strip(" []").split(",")]
-    rec["names"] = [n for n in names if len(n) >= 3]
-    rec["aliases"] = ", ".join(rec["names"][1:])
-    rec["slug"] = slug
-    return rec
 
 
 def candidate_line(item):
@@ -174,53 +149,91 @@ def build_prompt(prompt, entries):
     )
 
 
-def ask(prompt, entries, spent=0.0):
-    """Return ((need, [(id, s)]) or None, timed_out). None means the call failed, timed out or answered no JSON."""
+CALL_MS = []  # wall ms of each Haiku call made by this process
+
+
+def user_turn(prompt, seen, named):
+    """User turn of a catalog call: the prompt, the hubs it names and the ids already shown."""
+    return (
+        "USER PROMPT:\n" + prompt[:PROMPT_CHARS]
+        + ("\n\nNAMED IN THE PROMPT: " + ", ".join(named) if named else "")
+        + ("\n\nALREADY SHOWN, never pick: " + ", ".join(sorted(seen)) if seen else "")
+        + "\n\nDo not answer the prompt. Rate the CANDIDATES from the system prompt for it. Reply with JSON only."
+    )
+
+
+def first_json(text):
+    """The first JSON object in the reply. Text before, after or between objects is ignored."""
+    decoder = json.JSONDecoder()
+    for found in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text, found.start())
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("no JSON in reply")
+
+
+def catalog_file(hubs, entries):
+    """Path of the static system prompt (rubric plus full catalog). Named by its hash, written atomically, reused while the vault is unchanged."""
+    text = build_system() + "\n\nCANDIDATES (hubs and entries), id | title | aliases or opening:\n" + "".join(
+        candidate_line(c) for c in hubs + entries)
+    base = os.environ["CLAUDE_PLUGIN_DATA"]
+    path = os.path.join(base, "select-%s.txt" % hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
+    if not os.path.exists(path):
+        os.makedirs(base, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        for old in glob.glob(os.path.join(base, "select-*.txt")):
+            if old != path:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+    return path
+
+
+def ask(prompt, entries, spent=0.0, system_file=None, seen=(), named=()):
+    """Return ((need, [(id, s)]) or None, timed_out). None means the call failed, timed out or answered no JSON.
+    With `system_file` the call rates the catalog in that file, else it rates `entries` listed in the user turn.
+    A failure other than a timeout is recorded as `haiku:<ExcType>` in `errors`, with the stderr tail."""
     command = [
-        "claude", "-p", "--model", MODEL, "--effort", "low", "--tools", "",
+        shutil.which("claude") or "claude", "-p", "--model", MODEL, "--effort", "low", "--tools", "",
         "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
-        "--disable-slash-commands", "--system-prompt", build_system(),
-    ]
+        "--disable-slash-commands",
+    ] + (["--system-prompt-file", system_file] if system_file else ["--system-prompt", build_system()])
+    stdin = user_turn(prompt, seen, named) if system_file else build_prompt(prompt, entries)
+    started = time.monotonic()
     try:
         timeout = max(1.0, min(float(os.environ.get(TIMEOUT_ENV, "20")), MAX_TIMEOUT, TOTAL_BUDGET - spent))
         # A scratch cwd keeps project CLAUDE.md and memory out of the nested call.
         with tempfile.TemporaryDirectory() as scratch:
             done = subprocess.run(
-                command, input=build_prompt(prompt, entries), capture_output=True,
-                text=True, timeout=timeout, cwd=scratch, env=dict(os.environ, **{NESTED: "1", FAST: "1"}),
+                command, input=stdin, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=timeout, cwd=scratch, env=dict(os.environ, **{NESTED: "1", FAST: "1"}),
             )
-        found = re.search(r"\{.*\}", done.stdout, re.DOTALL)
-        data = json.loads(found.group(0)) if done.returncode == 0 and found else None
+        if done.returncode != 0:
+            raise RuntimeError("exit %d: %s" % (done.returncode, (done.stderr.strip() or done.stdout.strip())[-150:] or "no output"))
+        data = first_json(done.stdout)
         need, picks = data["need"], data["picks"]
         if not (level(need) and isinstance(picks, list)):
-            return None, False
-    except subprocess.TimeoutExpired:
+            raise ValueError("bad reply shape")
+    except subprocess.TimeoutExpired as exc:
+        hook.note_error("haiku", exc)
         return None, True
-    except Exception:
+    except Exception as exc:
+        hook.note_error("haiku", exc)
         return None, False
+    finally:
+        CALL_MS.append(int((time.monotonic() - started) * 1000))
     return (need, [(p["id"], p["s"]) for p in picks if isinstance(p, dict) and isinstance(p.get("id"), str) and level(p.get("s"))]), False
 
 
 def level(value):
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3
-
-
-FENCE_RE = re.compile(r"<\s*/?\s*vault-entry\b[^>\n]*>?", re.I)
-
-
-def fence(ident, text, limit=None, pointer=""):
-    """Wrap entry text in a <vault-entry> block. Fence tags inside the text are removed, so vault text cannot close the fence."""
-    safe_id = re.sub(r'["<>\s]', "", ident)
-    body = text
-    while True:  # strip until stable: removing a tag must not rebuild one from the pieces around it
-        stripped = FENCE_RE.sub("", body)
-        if stripped == body:
-            break
-        body = stripped
-    body = body.strip()
-    if limit is not None:
-        body = body[: max(0, limit - len(safe_id) - 40 - len(pointer))] + pointer
-    return '<vault-entry id="%s">\n%s\n</vault-entry>' % (safe_id, body)
 
 
 def render(picked, by_model=False):
@@ -257,6 +270,9 @@ def record_result(sid, shown, key, levels=(), ranker=None, scores=None, warm=Fal
             selected[ident] = selected.get(ident, 0) + 1
             if ident not in sess.setdefault("shown", []):
                 sess["shown"].append(ident)
+        raw = sess.setdefault("haiku_ms_raw", [])
+        raw.extend(CALL_MS)
+        del raw[:-select_stats.MAX_RAW], CALL_MS[:]
         counts = sess.setdefault("select_levels", {})
         for name in levels:
             counts[name] = counts.get(name, 0) + 1
@@ -295,10 +311,29 @@ def paused(sess):
     return sess.get("fail_streak", 0) >= MAX_FAILS and time.time() - sess.get("select_fail_at", 0) < FAIL_PAUSE
 
 
-def pins_only(hubs, prompt, seen):
-    """Hubs whose name or alias is a whole word of the prompt. Used when the ranker gives no reply."""
+def named_hubs(hubs, prompt, seen):
+    """Hubs whose name or alias is a whole word of the prompt."""
     low = prompt.lower()
-    return [(h, 3) for h in hubs if h["id"] not in seen and any(whole_word(n, low) for n in h["names"])][:PICKS]
+    return [h for h in hubs if h["id"] not in seen and any(whole_word(n, low) for n in h["names"])]
+
+
+def pins_only(hubs, prompt, seen):
+    """The named hubs as (hub, 3) picks. Used when the ranker gives no reply and Haiku cannot answer."""
+    return [(h, 3) for h in named_hubs(hubs, prompt, seen)][:PICKS]
+
+
+def rate(prompt, candidates, spent, system_file=None, seen=(), named=()):
+    """Ask Haiku about the candidates. Return (picked, levels, timed_out). `picked` is None when the call failed."""
+    answer, timed_out = ask(prompt, candidates, spent, system_file, seen, named)
+    if answer is None:
+        return None, [], timed_out
+    need, rated = answer
+    by_id = {c["id"]: c for c in candidates}
+    by_id.update({k[len("entities/"):]: v for k, v in list(by_id.items()) if k.startswith("entities/")})  # bare hub slug
+    rated = [(by_id[i], s) for i, s in dict(rated).items() if i in by_id and s >= 1]
+    levels = ["need%d" % need] + ["s%d" % s for _c, s in rated]
+    picked = sorted((p for p in rated if p[1] >= MIN_S), key=lambda p: -p[1])[:PICKS] if need >= MIN_NEED else []
+    return picked, levels, timed_out
 
 
 def run(event):
@@ -316,33 +351,41 @@ def run(event):
     seen = set(sess.get("shown", [])) | {c["id"] for c in entries + hubs if c["id"].split("#")[0] + ".md" in read}
     everything = {c["id"]: c for c in entries + hubs}
     started = time.monotonic()
+    on_pause = paused(sess)
     reply = local_rank.rank(prompt, seen) if local_rank.ready(hook.vault()) else None
     spent = time.monotonic() - started
     warm = bool(reply and reply.get("warm"))
-    levels, timed_out, by_model, name = [], False, False, "local"
-    if reply is None:
-        name, picked = "fallback", pins_only(hubs, prompt, seen)
-    else:
+    name = "local" if reply else "fallback"
+    named = []
+    if reply:
         top = max(reply["scores"].values(), default=0.0)
-        if (top <= LOW_SCORE and not reply["pins"]) or paused(sess):
-            picked = []
-        else:
-            candidates = [everything[i] for i in reply["ids"] if i in everything][:GREY_CANDIDATES]
-            answer, timed_out = ask(prompt, candidates, spent)
-            if answer is None:
-                record_result(sid, [], "select_fail", ranker=name, warm=warm, model=True)
-                return timed_out
-            need, rated = answer
-            by_id = {c["id"]: c for c in candidates}
-            rated = [(by_id[i], s) for i, s in dict(rated).items() if i in by_id and s >= 1]
-            levels = ["need%d" % need] + ["s%d" % s for _c, s in rated]
-            picked = sorted((p for p in rated if p[1] >= MIN_S), key=lambda p: -p[1])[:PICKS] if need >= MIN_NEED else []
-            by_model = True
+        skipped = (top <= LOW_SCORE and not reply["pins"]) or on_pause
+        candidates = [everything[i] for i in reply["ids"] if i in everything][:GREY_CANDIDATES]
+    else:
+        # Default: Haiku rates the full catalog. The static part sits in a system prompt file.
+        named = named_hubs(hubs, prompt, seen)
+        skipped = on_pause
+        candidates = [c for c in hubs + entries if c["id"] not in seen]
+    levels, timed_out, by_model, failed, picked = [], False, False, False, []
+    if skipped:
+        picked = [] if reply else pins_only(hubs, prompt, seen)
+    else:
+        catalog = None if reply else catalog_file(hubs, entries)
+        picked, levels, timed_out = rate(prompt, candidates, spent, catalog, seen, [h["id"] for h in named])
+        failed = picked is None
+        if failed and reply:
+            record_result(sid, [], "select_fail", ranker=name, warm=warm, model=True)
+            return timed_out
+        if failed:  # last resort without a ranker: the named hubs, and the failure still counts toward the pause
+            picked = pins_only(hubs, prompt, seen)
+        by_model = not failed
+    key = "select_fail" if failed else None
     if not picked:
-        record_result(sid, [], "select_none", levels, ranker=name, warm=warm, model=by_model)
+        # A turn the failure pause skipped had no model answer: count it apart from a real "nothing applies".
+        record_result(sid, [], key or ("select_paused" if on_pause else "select_none"), levels, ranker=name, warm=warm, model=by_model or failed)
         return timed_out
     text, shown = render(picked, by_model)
-    record_result(sid, shown, None, levels, ranker=name, scores={p[0]["id"]: p[1] for p in picked}, warm=warm, model=by_model)
+    record_result(sid, shown, key, levels, ranker=name, scores={p[0]["id"]: p[1] for p in picked}, warm=warm, model=by_model or failed)
     print(text)
     return timed_out
 

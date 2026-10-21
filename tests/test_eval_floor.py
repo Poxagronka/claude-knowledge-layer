@@ -28,6 +28,13 @@ def test_baseline_meets_floor():
     assert bench.check_floor(BASELINE, FLOOR) == []
 
 
+def test_baseline_ran_the_shipped_pipeline():
+    if BASELINE.get("measured") is False:
+        assert BASELINE["params"]["pipeline"].startswith("unmeasured template:")
+    else:
+        assert BASELINE["params"]["pipeline"] == "haiku-full-catalog"
+
+
 def test_case_ids_exist_in_vault():
     entries, hubs = knowledge_select.load_candidates(str(ROOT / "plugins" / "knowledge" / "vault"))
     known = {e["id"] for e in entries} | {h["id"] for h in hubs}

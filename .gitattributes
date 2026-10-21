@@ -1,0 +1,2 @@
+# The plugin must check out byte-identical on every OS: autoupdate hashes its files against integrity.json.
+plugins/knowledge/** -text

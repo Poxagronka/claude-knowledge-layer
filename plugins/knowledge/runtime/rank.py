@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Local ranker: e5 top-40, mmarco rerank, top-20 plus alias-pinned hubs.
 
-Runs under the runtime venv: `python -I rank.py` reads {"prompt", "seen"} on stdin and
-prints {"ids": [...], "scores": {...}}. `--warm` builds the vault vectors and exits.
+Runs under the runtime venv. `--warm` builds the vault vectors and exits.
 `--serve` keeps the models in memory and answers one JSON request per connection on a Unix
-socket (local_rank.sock_path()). It exits after IDLE_SECONDS with no request.
+socket (local_rank.sock_path()), or on Windows on a loopback TCP port written to that file.
+It exits after IDLE_SECONDS with no request, when its runtime stamp
+is no longer the installed one, and after a failed request (the client then respawns a fresh daemon).
 Env: CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA (set by Claude Code).
 """
-import fcntl
+import contextlib
 import json
 import os
 import socket
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts"))
@@ -21,11 +23,13 @@ from tokenizers import Tokenizer  # noqa: E402
 
 import knowledge_select as ks  # noqa: E402
 import local_rank as lr  # noqa: E402
+import plugin_state  # noqa: E402
 
 MAXLEN = 256
 RETRIEVE = 40
 KEEP = 20
 IDLE_SECONDS = 10 * 60
+STAMP_CHECK_SECONDS = 60
 _models = {}
 _vault = {}
 
@@ -126,19 +130,36 @@ def remove_orphan_locks():
             continue
         try:
             with open(path, "a") as fh:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                plugin_state.flock(fh, wait=False)
                 os.unlink(path)
         except OSError:
             pass
 
 
+def stamp_stale():
+    """True when the installed runtime stamp is missing or differs from this daemon's stamp."""
+    try:
+        with open(lr.data_path("runtime.stamp")) as fh:
+            return fh.read().strip() != lr.stamp()
+    except OSError:
+        return True
+
+
+def drop_socket():
+    """Remove the socket file and return the exit code. The lock is released when the process ends."""
+    with contextlib.suppress(OSError):
+        os.unlink(lr.sock_path())
+    return 0
+
+
 def serve(vault_dir):
     """Daemon loop. The lock file keeps one daemon per runtime version, so a stale socket file is safe to remove."""
     os.makedirs(os.path.dirname(lr.sock_path()), mode=0o700, exist_ok=True)
-    os.chmod(os.path.dirname(lr.sock_path()), 0o700)
+    if sys.platform != "win32":
+        os.chmod(os.path.dirname(lr.sock_path()), 0o700)
     lock = open(lr.sock_path() + ".lock", "a")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        plugin_state.flock(lock, wait=False)
     except OSError:
         return 0
     remove_orphan_locks()
@@ -147,18 +168,33 @@ def serve(vault_dir):
     model("rerank")
     if os.path.exists(lr.sock_path()):
         os.unlink(lr.sock_path())
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(lr.sock_path())
-    os.chmod(lr.sock_path(), 0o600)
-    srv.listen(4)
-    srv.settimeout(IDLE_SECONDS)
+    if sys.platform == "win32":  # no AF_UNIX: listen on loopback, publish the port in the socket file
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        tmp = lr.sock_path() + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write(str(srv.getsockname()[1]))
+        os.replace(tmp, lr.sock_path())
+    else:
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(lr.sock_path())
+        os.chmod(lr.sock_path(), 0o600)
+    srv.listen(16)
+    srv.settimeout(STAMP_CHECK_SECONDS)
+    idle = 0
     while True:
         try:
             conn, _ = srv.accept()
         except socket.timeout:
-            os.unlink(lr.sock_path())
-            return 0
+            idle += STAMP_CHECK_SECONDS
+            if idle >= IDLE_SECONDS or stamp_stale():
+                return drop_socket()
+            continue
+        idle = 0
         with conn:
+            if stamp_stale():
+                return drop_socket()
+            failed = False
             try:
                 conn.settimeout(5)
                 raw = b""
@@ -167,13 +203,19 @@ def serve(vault_dir):
                     if not chunk:
                         break
                     raw += chunk
+                deadline = json.loads(raw).get("deadline")
+                if deadline is not None and deadline < time.time():
+                    continue  # the client already gave up: skip the work so a burst cannot queue
                 reply = answer(vault_dir, raw)
             except Exception as exc:
                 reply = {"error": str(exc)[:200]}
+                failed = True
             try:
                 conn.sendall(json.dumps(reply).encode("utf-8"))
             except OSError:
                 pass
+        if failed:
+            return drop_socket()
 
 
 def main():
@@ -183,8 +225,7 @@ def main():
         return 0
     if "--serve" in sys.argv:
         return serve(vault_dir)
-    json.dump(answer(vault_dir, sys.stdin.read()), sys.stdout)
-    return 0
+    return 2  # no one-shot mode: only the flocked daemon loads the models
 
 
 if __name__ == "__main__":

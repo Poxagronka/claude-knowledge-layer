@@ -15,7 +15,7 @@ hook = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hook)
 import issue_queue  # noqa: E402  (hook put the scripts folder on sys.path)
 
-SID = "s1"
+SID = "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f"
 ENSURED = []
 
 
@@ -266,10 +266,9 @@ def test_send_reports_and_resets_errors(env, monkeypatch):
 
     hook.main(["send-interim", path])
     assert sent()["errors"] == {"select:OSError": 2}
-    assert json.loads((data / "errors.json").read_text()) == {"select:OSError": 2}
+    assert not (data / "errors.json").exists()  # taken by the interim send: the final one must not repeat it
     hook.main(["send", path])
-    assert sent()["errors"] == {"select:OSError": 2}
-    assert json.loads((data / "errors.json").read_text()) == {}
+    assert sent()["errors"] == {}
 
 
 def test_session_start_ensures_local_runtime_once(env, monkeypatch):
@@ -329,7 +328,7 @@ def test_send_payload_and_gh_calls(env, monkeypatch):
     assert comment[3] == "42"
     body = comment[comment.index("--body") + 1]
     payload = json.loads(body.split("```json\n")[1].rsplit("\n```", 1)[0])
-    assert payload["schema"] == 10 and payload["final"] is True
+    assert payload["schema"] == 11 and payload["final"] is True
     assert payload["captures"] == 0
     assert payload["ranker"] == {}
     assert payload["reread_after_compact"] == 0 and payload["reinjected_after_compact"] == 0
@@ -377,7 +376,7 @@ import importlib.util, io, json, sys
 spec = importlib.util.spec_from_file_location("hook", sys.argv[1])
 hook = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hook)
-ev = json.dumps({"session_id": "s1", "tool_name": "Read", "tool_input": {"file_path": sys.argv[2]}})
+ev = json.dumps({"session_id": "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f", "tool_name": "Read", "tool_input": {"file_path": sys.argv[2]}})
 for _ in range(25):
     sys.stdin = io.StringIO(ev)
     hook.main(["track"])
@@ -390,7 +389,8 @@ def test_concurrent_track_loses_no_hits(env):
     procs = [subprocess.Popen([sys.executable, "-c", WORKER, script, str(plugin / "vault" / "a.md")])
              for _ in range(8)]
     assert all(p.wait() == 0 for p in procs)
-    assert session(data)["hits"] == {"a.md": 200}
+    errors = data / "errors.log"
+    assert session(data)["hits"] == {"a.md": 200}, errors.read_text() if errors.exists() else "no errors.log"
 
 
 def test_session_start_spawns_at_most_two(env, monkeypatch):
@@ -468,7 +468,7 @@ def test_opt_out_still_sweeps_week_old_files(env, monkeypatch):
 
 def test_only_plain_cat_counts_as_full_read(env, monkeypatch):
     _, data, _ = env
-    path = str(env[0] / "vault" / "a.md")
+    path = (env[0] / "vault" / "a.md").as_posix()
     for cmd in ("head -5 %s" % path, "sed -n 1,3p %s" % path, "cat >> %s <<EOF" % path, "cat %s | head" % path):
         run("track", bash_event(cmd), monkeypatch)
     sess = session(data)
@@ -642,25 +642,25 @@ def test_flush_marks_sending_file_fresh(env, monkeypatch):
 
 # --- compound Bash reads and stale fixes sent as comments ---
 
-def vault_str(plugin):
-    return str(plugin / "vault")
+def vault_str(plugin, *rels):
+    for r in rels:
+        (plugin / "vault" / r).parent.mkdir(parents=True, exist_ok=True)
+        (plugin / "vault" / r).write_text("x")
+    return (plugin / "vault").as_posix()  # Bash text: a backslash would be an escape
 
 
 def test_bash_reads_compound_assignment_and_grep(env):
-    v = vault_str(env[0])
+    v = vault_str(env[0], "entities/team-example.md")
     cmd = 'V=%s; cat $V/entities/team-example.md; grep -rn -i "example" $V/lessons' % v
     assert hook.bash_reads(cmd) == [("entities/team-example.md", True)]
 
 
 def test_bash_reads_multiple_sed_and_cat(env):
-    v = vault_str(env[0])
+    v = vault_str(env[0], "lessons/ua-networks.md", "entities/playbook-example-playbook.md")
     cmd = ("V=%s; sed -n 80,100p $V/lessons/ua-networks.md; sed -n 266,278p $V/lessons/ua-networks.md; "
            "cat $V/entities/playbook-example-playbook.md") % v
-    assert hook.bash_reads(cmd) == [
-        ("lessons/ua-networks.md", False),
-        ("lessons/ua-networks.md", False),
-        ("entities/playbook-example-playbook.md", True),
-    ]
+    assert hook.bash_reads(cmd) == [("lessons/ua-networks.md", False), ("lessons/ua-networks.md", False),
+                                    ("entities/playbook-example-playbook.md", True)]
 
 
 def test_bash_reads_piped_cat_is_not_full(env):
@@ -669,7 +669,7 @@ def test_bash_reads_piped_cat_is_not_full(env):
 
 
 def test_bash_reads_export_and_braces(env):
-    v = vault_str(env[0])
+    v = vault_str(env[0], "x.md", "y.md")
     assert hook.bash_reads('export V=%s && cat "$V/x.md"' % v) == [("x.md", True)]
     assert hook.bash_reads("V=%s; cat ${V}/y.md" % v) == [("y.md", True)]
 
@@ -686,7 +686,7 @@ def test_bash_reads_redirect_is_not_full(env):
 
 def test_track_compound_bash_read_counts_hits(env, monkeypatch):
     _, data, _ = env
-    v = vault_str(env[0])
+    v = vault_str(env[0], "b.md")
     run("track", bash_event("V=%s; cat $V/a.md; sed -n 1,2p $V/b.md" % v), monkeypatch)
     sess = session(data)
     assert sess["hits"] == {"a.md": 1, "b.md": 1}

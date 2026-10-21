@@ -3,9 +3,12 @@ import io
 import json
 import os
 import stat
+import sys
 
 import pytest
 from conftest import write_config
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="fake claude is an sh script")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "plugins", "knowledge", "scripts")
@@ -148,6 +151,16 @@ def test_failure_prints_nothing_and_counts(env, capsys, monkeypatch, body):
     monkeypatch.setenv(sel.TIMEOUT_ENV, "1")
     assert run(capsys, monkeypatch) == ""
     assert session(data)["select_fail"] == 1
+
+
+@pytest.mark.parametrize("body, key", [
+    ("echo boom >&2; exit 1", "haiku:RuntimeError"), ("echo not json", "haiku:ValueError"),
+])
+def test_failure_reason_counts_in_errors(env, capsys, monkeypatch, body, key):
+    bin_dir, data = env
+    fake_claude(bin_dir, body)
+    run(capsys, monkeypatch)
+    assert json.loads((data / "errors.json").read_text()) == {key: 1}
 
 
 def no_model_call(bin_dir):
@@ -524,13 +537,48 @@ def test_low_score_injects_nothing_without_model(env, capsys, monkeypatch):
     assert out == "" and not called.exists() and session(data)["select_none"] == 1
 
 
-def test_no_ranker_gives_pins_only_without_model(env, capsys, monkeypatch):
+OTHER_HUB = "---\nid: team-alpha\ntype: entity\naliases: [Alpha]\n---\n# Alpha team\n\nThe Alpha squad.\n"
+
+
+def no_ranker(bin_dir, body):
+    """No ranker reply, a second hub in the vault and a fake Haiku that records its stdin. Return the stdin file."""
     RANKER["reply"] = None
-    out, called, data = no_model_run(env, capsys, monkeypatch)  # PROMPT names the Example Service hub
-    assert "### [3] %s" % HUB_ID in out and RULE_ID not in out
-    assert not called.exists() and session(data)["ranker"] == {"fallback": 1}
-    out, called, _ = no_model_run(env, capsys, monkeypatch, prompt="a long prompt about nothing named", sid="s2")
-    assert out == "" and not called.exists()
+    with open(os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "vault", "entities", "team-alpha.md"), "w") as fh:
+        fh.write(OTHER_HUB)
+    path = fake_claude(bin_dir, body)
+    path.write_text(path.read_text().replace("cat > /dev/null", "cat > %s/stdin.txt" % bin_dir))
+    return bin_dir / "stdin.txt"
+
+
+def test_no_ranker_asks_haiku_over_the_full_catalog_with_the_named_hub_in_the_user_turn(env, capsys, monkeypatch):
+    bin_dir, data = env
+    stdin = no_ranker(bin_dir, reply([("entities/team-alpha", 3)]))
+    out = run(capsys, monkeypatch, prompt="Which squad owns the Example Service threshold today?")
+    sent = stdin.read_text()
+    assert "NAMED IN THE PROMPT: " + HUB_ID in sent and RULE_ID not in sent
+    catalog = catalog_text(bin_dir)
+    assert HUB_ID in catalog and "entities/team-alpha" in catalog and RULE_ID in catalog
+    assert out.startswith("ACME KNOWLEDGE: Claude Haiku rated") and "### [3] entities/team-alpha" in out
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1}
+
+
+def test_no_ranker_haiku_failure_injects_named_hubs_only(env, capsys, monkeypatch):
+    bin_dir, data = env
+    no_ranker(bin_dir, "exit 1")
+    out = run(capsys, monkeypatch)  # PROMPT names the Example Service hub
+    assert "### [3] %s" % HUB_ID in out and RULE_ID not in out and "entities/team-alpha" not in out
+    assert session(data)["ranker"] == {"fallback": 1, "haiku": 1} and session(data)["select_fail"] == 1
+    out = run(capsys, monkeypatch, prompt="a long prompt about nothing named", sid="s2")
+    assert out == ""
+
+
+def test_no_ranker_skips_haiku_while_paused(env, capsys, monkeypatch):
+    bin_dir, data = env
+    stdin = no_ranker(bin_dir, reply([("entities/team-alpha", 3)]))
+    for _ in range(sel.MAX_FAILS):
+        sel.record_result(SID, [], "select_fail", model=True)
+    out = run(capsys, monkeypatch)
+    assert "### [3] %s" % HUB_ID in out and not stdin.exists()
 
 
 def test_grey_zone_asks_haiku_and_counts_it(env, capsys, monkeypatch):
@@ -560,7 +608,7 @@ def test_model_pauses_after_two_failures_then_resumes(env, capsys, monkeypatch):
     called = no_model_call(bin_dir)
     assert run(capsys, monkeypatch) == "" and not called.exists()
     sess = session(data)
-    assert sess["select_fail"] == 2 and sess["select_none"] == 1
+    assert sess["select_fail"] == 2 and sess["select_paused"] == 1 and sess["select_none"] == 0
     real = sel.time.time
     monkeypatch.setattr(sel.time, "time", lambda: real() + sel.FAIL_PAUSE + 1)
     fake_claude(bin_dir, reply([RULE_ID]))
@@ -621,3 +669,76 @@ def test_two_big_picks_and_small_pick_all_visible(env, capsys, monkeypatch):
     assert len(out) + 1 <= sel.BUDGET
     for entry_id in (RULE_ID, HUB_ID, small):
         assert "### [2] %s" % entry_id in out
+
+
+def catalog_text(bin_dir):
+    args = (bin_dir / "args.txt").read_text().split("\0")
+    assert "--system-prompt" not in args
+    return open(args[args.index("--system-prompt-file") + 1], encoding="utf-8").read()
+
+
+def test_catalog_file_has_rubric_and_is_reused(env, capsys, monkeypatch):
+    bin_dir, data = env
+    no_ranker(bin_dir, reply([]))
+    run(capsys, monkeypatch)
+    args = (bin_dir / "args.txt").read_text().split("\0")
+    path = args[args.index("--system-prompt-file") + 1]
+    first = open(path, encoding="utf-8").read()
+    assert "First rate NEED" in first and RULE_ID in first and os.path.dirname(path) == str(data)
+    os.utime(path, (1, 1))
+    run(capsys, monkeypatch, sid="s2")
+    args = (bin_dir / "args.txt").read_text().split("\0")
+    assert args[args.index("--system-prompt-file") + 1] == path and os.path.getmtime(path) == 1  # reused, not rewritten
+    assert [f for f in os.listdir(data) if f.startswith("select-")] == [os.path.basename(path)]
+
+
+def test_catalog_file_changes_with_the_vault_and_drops_the_old_one(env, capsys, monkeypatch):
+    bin_dir, data = env
+    no_ranker(bin_dir, reply([]))
+    run(capsys, monkeypatch)
+    old = [f for f in os.listdir(data) if f.startswith("select-")]
+    with open(os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "vault", "entities", "team-alpha.md"), "w") as fh:
+        fh.write(OTHER_HUB.replace("aliases: [Alpha]", "aliases: [Beta]"))
+    run(capsys, monkeypatch, sid="s2")
+    new = [f for f in os.listdir(data) if f.startswith("select-")]
+    assert len(new) == 1 and new != old
+
+
+def test_seen_ids_go_to_the_user_turn_not_the_catalog(env, capsys, monkeypatch):
+    bin_dir, _ = env
+    stdin = no_ranker(bin_dir, reply([RULE_ID]))
+    run(capsys, monkeypatch)
+    run(capsys, monkeypatch)
+    assert "ALREADY SHOWN, never pick: " in stdin.read_text() and "JSON only" in stdin.read_text()
+
+
+def test_bare_hub_slug_counts_as_the_hub_id(env, capsys, monkeypatch):
+    bin_dir, _ = env
+    no_ranker(bin_dir, reply([("team-alpha", 3)]))
+    assert "### [3] entities/team-alpha" in run(capsys, monkeypatch)
+
+
+def test_claude_is_resolved_with_which(env, capsys, monkeypatch):
+    bin_dir, _ = env
+    no_ranker(bin_dir, reply([]))
+    seen = []
+    real = sel.subprocess.run
+    monkeypatch.setattr(sel.subprocess, "run", lambda cmd, **kw: seen.append(cmd[0]) or real(cmd, **kw))
+    monkeypatch.setattr(sel.shutil, "which", lambda name: str(bin_dir / "claude"))
+    run(capsys, monkeypatch)
+    assert seen == [str(bin_dir / "claude")]
+
+
+def test_call_wall_ms_is_recorded(env, capsys, monkeypatch):
+    bin_dir, data = env
+    no_ranker(bin_dir, reply([RULE_ID]))
+    run(capsys, monkeypatch)
+    assert len(session(data)["haiku_ms_raw"]) == 1 and session(data)["haiku_ms_raw"][0] >= 0
+
+
+def test_failure_logs_short_stderr_tail(env, capsys, monkeypatch):
+    bin_dir, data = env
+    no_ranker(bin_dir, "echo 'prompt text: secret' >&1; printf 'x%.0s' $(seq 1 300) >&2; exit 1")
+    run(capsys, monkeypatch)
+    line = (data / "errors.log").read_text().splitlines()[-1]
+    assert "exit 1: " in line and "secret" not in line and len(line.split("RuntimeError: ", 1)[1]) <= 200
