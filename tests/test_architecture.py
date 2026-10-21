@@ -27,7 +27,7 @@ LAZY_CYCLE_FILES = set()
 OVER_LIMIT = {"tests/test_hook.py": 712, "tests/test_knowledge_select.py": 744}
 RANKER_PACKAGES = {"numpy", "onnxruntime", "tokenizers"}  # runtime/rank.py runs in the ranker venv
 
-FILES = sorted(str(p.relative_to(ROOT)) for directory in SCANNED
+FILES = sorted(p.relative_to(ROOT).as_posix() for directory in SCANNED
                for p in (Path(ROOT) / directory).rglob("*.py"))
 SOURCES = {p: open(os.path.join(ROOT, p), encoding="utf-8").read() for p in FILES}
 TREES = {p: ast.parse(s) for p, s in SOURCES.items()}
