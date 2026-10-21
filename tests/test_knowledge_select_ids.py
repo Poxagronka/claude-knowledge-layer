@@ -17,3 +17,17 @@ def test_load_candidates_ids_use_forward_slashes(tmp_path, monkeypatch):
     monkeypatch.setattr(sel.os, "sep", "\\")
     _entries, hubs = sel.load_candidates(str(tmp_path))
     assert [h["id"] for h in hubs] == ["entities/service-example-service"]
+
+
+def test_repo_files_are_whole_file_records_named_by_the_full_repo_name(tmp_path):
+    (tmp_path / "repos").mkdir()
+    (tmp_path / "repos" / "example-app.md").write_text(
+        "---\nid: repos/example-app\ntype: repo\norg: o\n---\n# example-app\n\nSample app.\n\n"
+        "Related: [[product-example-app]]\n", encoding="utf-8")
+    (tmp_path / "repos" / "_index.md").write_text("---\nid: repos/_index\ntype: map\n---\n# Active repos\n", encoding="utf-8")
+    entries, hubs = sel.load_candidates(str(tmp_path))
+    assert entries == []
+    assert [h["id"] for h in hubs] == ["repos/example-app"]
+    assert hubs[0]["names"] == ["example-app", "example app"]
+    assert [h["id"] for h in sel.named_hubs(hubs, "fix the example-app build", set())] == ["repos/example-app"]
+    assert sel.named_hubs(hubs, "a sample puzzle", set()) == []

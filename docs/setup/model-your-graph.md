@@ -84,17 +84,17 @@ Then write facts and rules in domain files.
 - Trust order is rules, then knowledge, then hypotheses.
 - Every entry links at least one hub. The gate fails on an orphan.
 - Write lessons in `lessons/<domain>.md`. A lesson has an origin: `slack`, `confluence`, `agent`, `issue` or `jira`.
-- Use `repos/<org>.md` for the catalog of active repos. Generate it, see below.
+- Use `repos/<name>.md` for one file per active repo, with the map `repos/_index.md`. Generate them, see below.
 - Use `confluence/<SPACE>.md` for reference cards. A card holds the link, freshness, the section list and a short summary. It never copies the page.
 
-Generate the repo catalog. Edit `scripts/repo_catalog.json` first: set `orgs`, `name_filter`, `skip`, `default_hub` and the `repos` map from repo name to an object with `type` and `hubs`, for example `"repos": {"example-service": {"type": "service", "hubs": ["team-example"]}}`. Then run:
+Generate the repo files. Edit `scripts/repo_catalog.json` first: set `orgs`, `name_filter`, `skip`, `default_hub` and the `repos` map from repo name to an object with `type` and `hubs`, for example `"repos": {"example-service": {"type": "service", "hubs": ["team-example"]}}`. Then run:
 
 ```bash
 python3 scripts/repo_catalog.py --today 2026-10-20
 python3 scripts/repo_catalog.py --today 2026-10-20 --check
 ```
 
-The script lists repos with `gh`. It keeps repos that are not archived and had a push in the last 183 days. A purpose line you write by hand wins over the GitHub description.
+The script lists repos with `gh`. It keeps repos that are not archived and had a push in the last 183 days. It creates a file for each new repo, deletes the file of a repo that left the window and rewrites the map. It never rewrites the body of an existing file, so a purpose you write by hand stays. The gate checks `org`, `section`, a hub link and a 2500 byte cap on each file.
 
 ## What not to store
 
@@ -121,7 +121,7 @@ The template vault holds a fictional organization. Replace it in this order. Run
 2. Rename each stub hub to a real node and rewrite its text. The stub ids are `team-example`, `person-jane-doe`, `product-example-app`, `service-example-service`, `metric-example-metric`, `vendor-example-vendor`, `process-example-process`, `initiative-example-initiative`, `tool-example-tool`, `competitor-example-competitor`, `platform-example-platform`, `playbook-example-playbook` and `datasource-example-datasource`.
 3. Delete a stub kind you do not use, with its `hub_kinds` key.
 4. Replace `example/` with your first real domain. Rename the folder and the `id` and `tags` in its three files.
-5. Rewrite `api/`, `lessons/example.md`, `repos/example-org.md`, `experiments/knowledge.md` and `confluence/EXAMPLE.md`. Delete the files you do not need and fix the links in `_index.md`.
+5. Rewrite `api/`, `lessons/example.md`, `repos/example-service.md`, `experiments/knowledge.md` and `confluence/EXAMPLE.md`. Delete the files you do not need and fix the links in `_index.md`.
 6. Fix every `[[link]]` that points to a removed id. A moved id goes to `_graveyard.md`.
 7. Replace the eval cases (see [maintain.md](maintain.md)).
 

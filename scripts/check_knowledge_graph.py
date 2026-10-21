@@ -26,23 +26,28 @@ BLOCK_ID = re.compile(r"\s\^([A-Za-z0-9-]+)\s*$")
 INLINE_CODE = re.compile(r"`[^`]*`")
 HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 FIELD = re.compile(r"\[([A-Za-z_]+):: ([^\[\]]*)\]")
-# Block id shape per file type. Types not listed here (entity, map) have no entries.
+# Block id shape per file type. Types not listed here (entity, map, repo) have no entries.
 ID_SHAPE = {
     "rule": re.compile(r"R\d+$"),
     "fact": re.compile(r"K-[a-z0-9-]+$"),
     "hypothesis": re.compile(r"H-[a-z0-9-]+$"),
     "lesson": re.compile(r"L-[a-z0-9-]+$"),
-    "catalog": re.compile(r"repo-[A-Za-z0-9-]+$"),
     "card": re.compile(r"page-\d+$"),
 }
 CARD_MAX_BYTES = 900
 TABLE_NUMBER_ROW = re.compile(r"^\s*\|.*\d")
-FILE_TYPES = tuple(ID_SHAPE) + ("entity", "map")
+FILE_TYPES = tuple(ID_SHAPE) + ("entity", "map", "repo")
+REPO_MAX_BYTES = 2500
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "plugins", "knowledge", "knowledge.json"), encoding="utf-8") as fh:
     CONFIG = json.load(fh)
 HUB_MAX_BYTES = CONFIG["hub_kinds"]
 HUB_KINDS = tuple(HUB_MAX_BYTES)
+# Repo orgs and sections come from the repo catalog config.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from repo_catalog import ORGS as REPO_ORGS, SECTIONS as _REPO_SECTIONS  # noqa: E402
+
+REPO_SECTIONS = tuple(key for key, _label in _REPO_SECTIONS)
 KIND_TAG = re.compile(r"kind/([a-z]+)")
 # Contact data is banned (_template.md rule 4): emails and phone numbers.
 CONTACT = re.compile(
@@ -243,7 +248,7 @@ def entry_checks(rel, ftype, hubs, files, logs, file_id):
     for num, _title, group, bid in entries(files[rel]):
         if bid and not shape.match(bid):
             errors.append("%s:%d: block id ^%s does not fit type %s" % (rel, num, bid, ftype))
-        if not bid and ftype in ("lesson", "catalog"):
+        if not bid and ftype == "lesson":
             errors.append("%s:%d: entry has no block id" % (rel, num))
         fields = dict(FIELD.findall(" ".join(ln for _n, ln in group)))
         for msg in verify_errors(fields):
@@ -286,8 +291,8 @@ def frontmatter(text):
     return None
 
 
-def hub_checks(rel, meta, logs, size):
-    """Verify fields in the frontmatter of one hub, plus the person hub fields."""
+def verify_meta_errors(rel, meta, logs):
+    """Verify fields and verified date in the frontmatter of one hub or repo file."""
     errors = ["%s:1: %s" % (rel, msg) for msg in verify_errors(meta)]
     if "verified" in meta and bad_date(meta["verified"]):
         errors.append("%s:1: verified must be a date YYYY-MM-DD, got %r" % (rel, meta["verified"]))
@@ -295,6 +300,28 @@ def hub_checks(rel, meta, logs, size):
         msg = unlogged(logs, meta["verified"], meta.get("id"))
         if msg:
             errors.append("%s:1: %s" % (rel, msg))
+    return errors
+
+
+def repo_checks(rel, meta, logs, text, hubs):
+    """Frontmatter, size and orphan errors for one repos/<name>.md file."""
+    errors = verify_meta_errors(rel, meta, logs)
+    if not rel.startswith("repos/"):
+        errors.append("%s:1: a type repo file must live under repos/" % rel)
+    if meta.get("org") not in REPO_ORGS:
+        errors.append("%s:1: repo org must be one of %s" % (rel, "|".join(REPO_ORGS)))
+    if meta.get("section") not in REPO_SECTIONS:
+        errors.append("%s:1: repo section must be one of %s" % (rel, "|".join(REPO_SECTIONS)))
+    if len(text.encode("utf-8")) > REPO_MAX_BYTES:
+        errors.append("%s:1: repo file is over the %d byte cap" % (rel, REPO_MAX_BYTES))
+    if not any(t.strip() in hubs for t, _b in LINK.findall(INLINE_CODE.sub("", text))):
+        errors.append("%s:1: orphan repo, link at least one entities/ [[hub]]" % rel)
+    return errors
+
+
+def hub_checks(rel, meta, logs, size):
+    """Verify fields in the frontmatter of one hub, plus the person hub fields."""
+    errors = verify_meta_errors(rel, meta, logs)
     kind = os.path.basename(rel).split("-", 1)[0]
     if size > HUB_MAX_BYTES.get(kind, size):
         errors.append("%s:1: %s hub is %d bytes, over the %d byte cap" % (rel, kind, size, HUB_MAX_BYTES[kind]))
@@ -322,7 +349,11 @@ def _file_errors(rel, text, errors, doc_ids, hubs, block_ids):
     if meta is None or not meta.get("id") or not meta.get("type"):
         errors.append("%s:1: frontmatter with id and type is required" % rel)
     else:
-        if meta["type"] not in FILE_TYPES:
+        if meta["type"] == "catalog":
+            errors.append("%s:1: type catalog was replaced by one repos/<name>.md file per repo (type repo). "
+                          "Copy any curated purpose lines into the new files, then delete this file "
+                          "and run scripts/repo_catalog.py" % rel)
+        elif meta["type"] not in FILE_TYPES:
             errors.append("%s:1: type %s must be one of %s" % (rel, meta["type"], "|".join(FILE_TYPES)))
         if meta["id"] != expected_id(rel):
             errors.append("%s:1: id %s must equal %s" % (rel, meta["id"], expected_id(rel)))
@@ -384,6 +415,8 @@ def check(vault):
         meta = frontmatter(text)
         if meta and meta.get("type") in ID_SHAPE:
             errors.extend(entry_checks(rel, meta["type"], hubs, files, logs, meta.get("id")))
+        elif meta and meta.get("type") == "repo":
+            errors.extend(repo_checks(rel, meta, logs, text, hubs))
         elif meta and rel.startswith("entities/"):
             errors.extend(hub_checks(rel, meta, logs, len(text.encode("utf-8"))))
     _link_errors(files, hubs, block_ids, errors)

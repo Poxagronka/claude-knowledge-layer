@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Write the repo catalog of the knowledge vault (repos/*.md) from the gh CLI.
+"""Keep one vault file per active repo (repos/<name>.md) and the map repos/_index.md.
 
 Lists the organizations in scripts/repo_catalog.json. Keeps only
 repos that are not archived and have a push in the last 183 days.
-A hand-written purpose line in the existing file always wins over the
-GitHub description. The output holds no push dates.
+A new repo gets a file. A repo that left the window loses its file.
+The body of an existing file is never rewritten. Only the frontmatter org
+and section are fixed. The output holds no push dates.
 Usage: repo_catalog.py --today YYYY-MM-DD [--root vault_dir] [--check]
---check writes nothing. It exits 1 when a file would change.
+--check writes nothing. It exits 1 when a file or the map would change.
 """
 import argparse
 import datetime
@@ -30,13 +31,10 @@ SECTIONS = [
     ("data", "Data and models"), ("other", "Other"),
 ]
 
-PURPOSE_RE = re.compile(r"^- `([^`]+)`: (.*?)(?: See \[\[.*)?$")
-ADDED_RE = re.compile(r"\[added:: (\d{4}-\d{2}-\d{2})\]")
-VERIFIED_RE = re.compile(r"\[last_verified:: (\d{4}-\d{2}-\d{2})\]")
-
-
-# A run may drop at most this many entries. More means a short listing, not real archiving.
+# A run may drop at most this many files. More means a short listing, not real archiving.
 MAX_DROP = 10
+MAP_FILE = "_index.md"
+NO_PURPOSE = "Purpose not described yet."
 
 
 def gh_list(org):
@@ -67,77 +65,105 @@ def pick(org, repos):
     return [r for r in repos if NAME_RE.search(r["name"]) and r["name"] not in SKIP]
 
 
-def read_existing(path):
-    """Map repo name to (hand-written purpose, added date, last_verified date)."""
-    old = {}
-    if not os.path.exists(path):
-        return old
-    lines = open(path, encoding="utf-8").read().split("\n")
-    for i, line in enumerate(lines):
-        m = PURPOSE_RE.match(line)
-        if not m:
-            continue
-        meta = lines[i + 1] if i + 1 < len(lines) else ""
-        added, seen = ADDED_RE.search(meta), VERIFIED_RE.search(meta)
-        old[m.group(1)] = (m.group(2), added.group(1) if added else None,
-                           seen.group(1) if seen else None)
-    return old
+def section_of(name):
+    return M.get(name, ("other",))[0]
 
 
-def purpose_for(repo, old):
-    if repo["name"] in old and old[repo["name"]][0]:
-        return old[repo["name"]][0]
+def description(repo):
     desc = " ".join((repo.get("description") or "").split()).rstrip(".")
-    return (desc or "Repository. Purpose not described yet") + "."
+    return desc + "." if desc else NO_PURPOSE
 
 
-def entry(repo, old, today, org, bid):
+def render_repo(repo, org, today, purpose=None, added=None):
+    """Text of a new repos/<name>.md file."""
     name = repo["name"]
     hubs = M.get(name, ("other", DEFAULT_HUB))[1].split()
-    purpose = purpose_for(repo, old)
-    added = old.get(name, (None, None, None))[1] or today.isoformat()
-    seen = old.get(name, (None, None, None))[2]
-    links = ", ".join("[[%s]]" % h for h in hubs)
-    return ["- `%s`: %s See %s." % (name, purpose, links),
-            "  [added:: %s] [verify_with:: github] [verify_query:: github:repo:%s/%s]%s ^%s"
-            % (added, org, name, " [last_verified:: %s]" % seen if seen else "", bid)]
+    head = ["---", "id: repos/" + name, "type: repo", "tags: [domain/repos]", "org: " + org,
+            "section: " + section_of(name), "added: " + (added or today.isoformat()),
+            "verify_with: github", "verify_query: github:repo:%s/%s" % (org, name)]
+    body = ["---", "# " + name, "", purpose or description(repo), "",
+            "- GitHub: `%s/%s`" % (org, name), "- Status: active", "",
+            "Related: " + ", ".join("[[%s]]" % h for h in hubs)]
+    return "\n".join(head + body) + "\n"
 
 
-def block_ids(repos):
-    """Unique block id per repo. A name that collides gets a numeric suffix, in name order."""
-    ids, used = {}, set()
-    for r in sorted(repos, key=lambda r: r["name"]):
-        base = bid = "repo-" + re.sub(r"[^A-Za-z0-9-]", "-", r["name"])
-        n = 1
-        while bid in used:
-            n += 1
-            bid = "%s-%d" % (base, n)
-        used.add(bid)
-        ids[r["name"]] = bid
-    return ids
+def repo_meta(text):
+    """Frontmatter org and section of a repo file."""
+    return {k: v.strip() for k, v in re.findall(r"^(org|section): *(.*)$", text.split("\n---", 2)[0], re.M)}
 
 
-def render(org, repos, old, today):
-    title = ORGS[org]
-    out = ["---", "id: repos/%s" % org, "type: catalog", "tags: [domain/repos]", "---",
-           "# Active repos: %s" % title, "",
-           "Active means not archived and with a push in the last 6 months.",
-           "Repos outside that window are left out.", ""]
-    ids = block_ids(repos)
-    for key, label in SECTIONS:
-        rows = [r for r in repos if M.get(r["name"], ("other",))[0] == key]
-        if not rows:
+def purpose_of(text):
+    """Purpose paragraph of a repo file: the lines after the H1 up to the first blank line."""
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("# ")), None)
+    para = []
+    for ln in lines[start + 1:] if start is not None else []:
+        if not ln.strip():
+            if para:
+                break
             continue
-        out += ["## " + label, ""]
-        for r in rows:
-            out += entry(r, old, today, org, ids[r["name"]])
-        out.append("")
-    return "\n".join(out).rstrip("\n") + "\n"
+        para.append(ln.strip())
+    return " ".join(para)
 
 
-def build(org, repos, root, today):
-    path = os.path.join(root, "repos", org + ".md")
-    return path, render(org, active(pick(org, repos), today), read_existing(path), today)
+def first_sentence(text):
+    return re.split(r"(?<=[.!?])\s", text, 1)[0]
+
+
+def fix_frontmatter(text, org, section):
+    """Set org and section in the frontmatter of an existing repo file. The body stays."""
+    head, sep, rest = text.partition("\n---\n")
+    for key, val in (("org", org), ("section", section)):
+        head = re.sub(r"^%s:.*$" % key, "%s: %s" % (key, val), head, flags=re.M)
+    return head + sep + rest
+
+
+def render_map(rows):
+    """rows: list of (org, section, name, first sentence of purpose)."""
+    out = ["---", "id: repos/_index", "type: map", "tags: [domain/repos]", "---",
+           "# Active repos", "",
+           "Active means not archived and with a push in the last 6 months. Each repo has one file."]
+    for org, title in ORGS.items():
+        out += ["", "## " + title]
+        for key, label in SECTIONS:
+            found = sorted((r for r in rows if r[0] == org and r[1] == key), key=lambda r: r[2].lower())
+            if found:
+                out += ["", "### " + label, ""]
+                out += ["- [[repos/%s]]: %s" % (name, line) for _o, _s, name, line in found]
+    return "\n".join(out) + "\n"
+
+
+def read_file(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def plan(root, listing, today):
+    """Return (writes {path: text}, deletes [path]) that bring root/repos in line with listing.
+
+    listing maps repo name to (org, gh repo dict).
+    """
+    base = os.path.join(root, "repos")
+    writes, rows = {}, []
+    for name, (org, repo) in sorted(listing.items()):
+        path = os.path.join(base, name + ".md")
+        want = section_of(name)
+        if os.path.exists(path):
+            text = read_file(path)
+            meta = repo_meta(text)
+            if meta.get("org") != org or meta.get("section") != want:
+                text = fix_frontmatter(text, org, want)
+                writes[path] = text
+        else:
+            text = writes[path] = render_repo(repo, org, today)
+        rows.append((org, want, name, first_sentence(purpose_of(text))))
+    index = os.path.join(base, MAP_FILE)
+    text = render_map(rows)
+    if not os.path.exists(index) or read_file(index) != text:
+        writes[index] = text
+    have = [n for n in sorted(os.listdir(base)) if n.endswith(".md") and n != MAP_FILE] if os.path.isdir(base) else []
+    deletes = [os.path.join(base, n) for n in have if n[:-3] not in listing]
+    return writes, deletes
 
 
 def main(argv=None):
@@ -148,27 +174,25 @@ def main(argv=None):
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args(argv)
     today = datetime.date.fromisoformat(args.today)
-    stale = False
-    pending = []
+    listing = {}
     for org in ORGS:
-        path, text = build(org, gh_list(org), args.root, today)
-        dropped = set(read_existing(path)) - set(re.findall(r"^- `([^`]+)`:", text, re.M))
-        if len(dropped) > MAX_DROP:
-            print("refusing to drop %d entries from %s (limit %d)" % (len(dropped), path, MAX_DROP))
-            return 2
-        current = open(path, encoding="utf-8").read() if os.path.exists(path) else None
-        if current == text:
-            continue
-        stale = True
-        if args.check:
-            print("out of date: " + path)
-        else:
-            pending.append((path, text))
-    for path, text in pending:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w", encoding="utf-8").write(text)
-        print("wrote " + path)
-    return 1 if (stale and args.check) else 0
+        for r in active(pick(org, gh_list(org)), today):
+            listing.setdefault(r["name"], (org, r))
+    writes, deletes = plan(args.root, listing, today)
+    if len(deletes) > MAX_DROP:
+        print("refusing to delete %d files (limit %d)" % (len(deletes), MAX_DROP))
+        return 2
+    for path in list(writes) + deletes:
+        print(("out of date: " if args.check else "") + path)
+    if args.check:
+        return 1 if (writes or deletes) else 0
+    os.makedirs(os.path.join(args.root, "repos"), exist_ok=True)
+    for path, text in writes.items():
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    for path in deletes:
+        os.remove(path)
+    return 0
 
 
 if __name__ == "__main__":

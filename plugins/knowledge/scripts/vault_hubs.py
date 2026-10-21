@@ -59,7 +59,9 @@ def hub_record(rel, front, body):
     rest = body.split("\n", 1)[1] if "\n" in body else ""
     rec = record(rel, title, body)
     rec["preview"] = clean(rest)[:PREVIEW]
-    names = [title, re.sub(r"^[a-z]+-", "", slug).replace("-", " ")]
+    # A hub slug starts with its kind (service-x). A repo slug is the repo name, so it keeps every word.
+    short = re.sub(r"^[a-z]+-", "", slug) if rel.startswith("entities/") else slug
+    names = [title, short.replace("-", " ")]
     aliases = []
     for ln in front:
         if ln.startswith("aliases:"):

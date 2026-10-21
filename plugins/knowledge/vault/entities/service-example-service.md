@@ -9,7 +9,7 @@ verify_with: none
 
 <What the service does, who runs it, where the code lives.> Example Service is the backend API of [[product-example-app]]. It runs as one container behind a load balancer.
 
-- Code: see the catalog entry in [[repos/example-org#^repo-example-service]].
+- Code: see the repo file [[repos/example-service]].
 - Rule: use one API key per user. See [[api/rules#^R1]].
 - Owner: [[team-example]]. Data: [[datasource-example-datasource]].
 

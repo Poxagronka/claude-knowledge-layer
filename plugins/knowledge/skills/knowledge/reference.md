@@ -11,7 +11,7 @@
 - `experiments/knowledge.md`: a map of the Jira boards where experiments live. Type `fact`, block ids `^K-exp-<slug>`. Per-experiment results stay in Jira. Durable takeaways go to `lessons/` with `origin:: jira` and `source:: jira:KEY`.
 - `api/rules.md` and `api/knowledge.md`: internal APIs. A normal domain.
 - `<domain>/rules.md`, `<domain>/knowledge.md` and `<domain>/hypotheses.md`: any other topic. The domain folders are listed in `_index.md`.
-- `repos/<org>.md`: the catalog of active repos. One entry per repo. Block ids `^repo-<name>`.
+- `repos/<name>.md`: one file per active repo. `repos/_index.md` is the map.
 - `entities/<kind>-<slug>.md`: hubs, one per subject. The kinds, the fields and the rules for each kind are in `vault/_template.md`.
 - `_template.md`: the format contract.
 - `_graveyard.md`: removed ids.

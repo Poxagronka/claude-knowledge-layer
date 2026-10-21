@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The repo catalog writes one vault file per repo, `repos/<name>.md` with `type: repo`, plus the map `repos/_index.md`, in place of one `repos/<org>.md` file per org. `scripts/repo_catalog.py` creates files for new repos, deletes files of repos that left the window and never rewrites an existing body.
+- The gate checks repo files: `org` (a key of `scripts/repo_catalog.json`), `section`, a verify field, an `entities/` hub link and a 2500 byte cap. The `catalog` file type is removed.
+- The selector treats a repo file as a hub record and matches its full name. `scripts/knowledge_verify.py` checks repo files like hubs.
+
+### Upgrading
+
+- An old `repos/<org>.md` catalog file now fails the gate. Copy its curated purpose lines into `repos/<name>.md` files before the next `scripts/repo_catalog.py` run. That run deletes the old file.
+
 ## [0.2.0]
 
 ### Added

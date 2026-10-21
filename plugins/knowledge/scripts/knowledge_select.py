@@ -100,7 +100,7 @@ def load_candidates(vault_dir):
                 with open(path, encoding="utf-8") as fh:
                     front, body = split_frontmatter(fh.read())
                 body = body.strip()
-                if rel.startswith("entities/"):
+                if rel.startswith(("entities/", "repos/")):
                     hubs.append(hub_record(rel, front, body))
                 else:
                     entries.extend(record(*e) for e in parse_entries(rel, body.splitlines()))

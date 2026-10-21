@@ -210,9 +210,9 @@ VAULT_RULES = ("---\nid: api/rules\ntype: rule\n---\n# Rules\n\n"
                "## R2 — b [[service-x]]\n[added:: 2026-03-01] [verify_with:: none] ^R2\n\n"
                "## R3 — c [[service-x]]\n[added:: 2026-01-01] [verify_with:: github] [verify_query:: github:repo:o/arch] "
                "[last_verified:: 2026-01-05] ^R3\n")
-VAULT_CATALOG = ("---\nid: repos/o\ntype: catalog\n---\n# Repos\n"
-                 "- `live`: Live repo. See [[service-x]].\n"
-                 "  [added:: 2026-04-01] [verify_with:: github] [verify_query:: github:repo:o/live] ^repo-live\n")
+VAULT_REPO = ("---\nid: repos/live\ntype: repo\ntags: [domain/repos]\norg: example-org\nsection: other\nadded: 2026-04-01\n"
+              "verify_with: github\nverify_query: github:repo:o/live\nverified: 2026-04-01\n---\n# live\n\n"
+              "Live repo. It does a thing.\n\n- GitHub: `o/live`\n\nRelated: [[service-x]]\n")
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ def vault(tmp_path):
     (tmp_path / "repos").mkdir()
     (tmp_path / "entities" / "service-x.md").write_text(VAULT_HUB)
     (tmp_path / "api" / "rules.md").write_text(VAULT_RULES)
-    (tmp_path / "repos" / "o.md").write_text(VAULT_CATALOG)
+    (tmp_path / "repos" / "live.md").write_text(VAULT_REPO)
     return tmp_path
 
 
@@ -231,12 +231,19 @@ def run_main(vault, capsys, *extra):
     return code, capsys.readouterr().out
 
 
+def test_repo_file_is_a_hub_record_with_first_sentence_purpose(vault):
+    rec = next(r for r in kv.records(str(vault)) if r["id"] == "repos/live")
+    assert rec["kind"] == "hub" and rec["bid"] is None
+    assert rec["purpose"] == "Live repo."
+    assert rec["seen"] == "2026-04-01"
+
+
 def test_report_shape_and_exit_zero(fakes, vault, capsys):
     code, out = run_main(vault, capsys)
     report = json.loads(out)
     assert code == 0 and report["checked_at"] == TODAY
     got = {r["id"]: r["verdict"] for r in report["results"]}
-    assert got == {"service-x": "ok", "api/rules#^R1": "ok", "api/rules#^R3": "gone", "repos/o#^repo-live": "ok"}
+    assert got == {"service-x": "ok", "api/rules#^R1": "ok", "api/rules#^R3": "gone", "repos/live": "ok"}
 
 
 def test_oldest_and_only_filters(fakes, vault, capsys):
@@ -254,7 +261,7 @@ def test_apply_stamps_only_ok_records(fakes, vault, capsys):
     assert "github:repo:o/live] [last_verified:: %s] ^R1" % TODAY in rules
     assert "[last_verified:: 2026-01-05] ^R3" in rules
     assert "^R2" in rules and "[verify_with:: none] ^R2" in rules
-    assert "[last_verified:: %s] ^repo-live" % TODAY in (vault / "repos" / "o.md").read_text()
+    assert "verified: %s\n" % TODAY in (vault / "repos" / "live.md").read_text()
     import check_knowledge_graph as ckg
     # R3 keeps its old date, so it needs its own log entry for the gate.
     (vault / "_verify" / "2026-01-05.json").write_text(json.dumps({"ok": ["api/rules#^R3"]}))
@@ -269,7 +276,7 @@ def test_apply_logs_exactly_the_stamped_ids(fakes, vault, capsys):
     run_main(vault, capsys, "--apply")
     log = read_log(vault)
     assert log["checked_at"] == TODAY
-    assert log["ok"] == ["api/rules#^R1", "repos/o#^repo-live", "service-x"]
+    assert log["ok"] == ["api/rules#^R1", "repos/live", "service-x"]
 
 
 def test_second_same_day_run_merges_the_log(fakes, vault, capsys):

@@ -118,7 +118,7 @@ Capture issues are org-visible raw material and the cron closes every one after 
 ## Other cron inputs
 
 - Lesson source: an optional Slack channel (`slack:<channel id>`) and an optional Confluence page (`confluence:<page id>`) where your teams post lessons learned. The cron may ingest new posts as lesson PRs. They go through the normal vault review. A lesson entry needs `source` (`slack:<ts>` or `confluence:<page id>`), `origin`, `status` and a hub link.
-- Repo catalog refresh: run `scripts/repo_catalog.py --today <date>`. It rewrites `repos/<org>.md` with the active repos only. Each entry carries `verify_query:: github:repo:<org>/<name>`.
+- Repo catalog refresh: run `scripts/repo_catalog.py --today <date>`. It creates `repos/<name>.md` for each new active repo, deletes the file of a repo that left the window and rewrites the map `repos/_index.md`. It never rewrites the body of an existing file. Each file carries `verify_query: github:repo:<org>/<name>`.
 
 ## Channel sweep
 
