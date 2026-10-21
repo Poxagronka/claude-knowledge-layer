@@ -12,16 +12,16 @@
  "scripts/config.py": "8e37410d862b9390b51a0a410b5dd7d11e2ea0b0fb648b48fe2a168fc1ee1114",
  "scripts/hook.py": "7e658c0d7ad57bd9a770dfbfefcf96edcb232c10d38ba898cafa52fa21fc22a7",
  "scripts/issue_queue.py": "3a80e5984877df2f0196f0ff8729ac1425677f55bac710db3bb35d584544a70f",
- "scripts/knowledge_select.py": "6a7f543484ee16b699d237b9f618414002ca9cf2c4c05c3a2ca389c4eaab61aa",
+ "scripts/knowledge_select.py": "b2ff354db870945ffb6e2cb2c61cb679c46f96699fba9f804641e738a52b78ed",
  "scripts/local_rank.py": "15565cf8332b545528f51931ab23e86eec597937c08194f0c6670f4ce77e55ff",
  "scripts/plugin_state.py": "5b8f7fdbe3b0e3c1766323f2a6d48373c579348f90438b6747f2e1dac2e1d5e0",
  "scripts/privacy.py": "6b6737392593809ecdf70ef2268d340abe7bdcd55b877beb9e32430a68355dd7",
  "scripts/select_stats.py": "2aa0605a9c05ba0d0bb1dd62f99bd1eb520f30919026feae125207d105039f2f",
  "scripts/switches.py": "be940317b8c030b9f46d3d9f7945f48dcde6d19e1df633d066ecc09522b8169a",
  "scripts/tool_hubs.py": "ce82fe91d9190d3f67cd2162dc18c0ed65276ebf6aedd5957a1caa1a1d44c50a",
- "scripts/vault_hubs.py": "a94b66d62e91ab83674624d1a7aaae39dc451b3748316c19dd653aad641ef224",
+ "scripts/vault_hubs.py": "3d13277e03da6651933d1071fe59e710355b38406fcd18190248d74d35a81e30",
  "skills/knowledge-propose/SKILL.md": "75843229713eba61a132059c16344a879092dd889a7e05ef165f0aa0a036bf6b",
  "skills/knowledge-propose/reference.md": "24b872eb34bfe2b31916a3338e425d713b57ed7ddefce0b7b90552025289af36",
  "skills/knowledge/SKILL.md": "7c103ca83bb905733245e46a7cce7af2b3ff86b8393a31a233a801179ee22028",
- "skills/knowledge/reference.md": "f47cc49f3fa6212ace6caeb32f6cae34af10a8879d714494204a8503105844d4"
+ "skills/knowledge/reference.md": "54ddd9290603c487e881f08ccf2a0696820b0be7f43776a5c3647cba93c75bbc"
 }

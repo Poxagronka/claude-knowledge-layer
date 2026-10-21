@@ -80,11 +80,49 @@ def test_duplicate_frontmatter_id_fails(tmp_path):
 LESSON_META = "[added:: 2024-04-05] [source:: slack:1712345678.123456] [origin:: slack] [status:: active] [verify_with:: none] ^L-x\n"
 
 
-def test_lesson_and_catalog_valid(tmp_path):
+REPO_FM = ("---\nid: repos/r\ntype: repo\ntags: [domain/repos]\norg: example-org\nsection: product\n"
+           "added: 2026-10-17\nverify_with: github\nverify_query: github:repo:example-org/r\n---\n")
+
+
+def test_lesson_valid(tmp_path):
     make_valid(tmp_path)
     write(tmp_path, "lessons/ua.md", FM % ("lessons/ua", "lesson") + "## Lesson x [[tool-a]]\n" + LESSON_META)
-    write(tmp_path, "repos/org.md", FM % ("repos/org", "catalog") + "# Repos\n- `r` [[tool-a]]\n  [added:: 2026-10-17] [verify_with:: none] ^repo-r\n")
     assert ckg.check(str(tmp_path)) == []
+
+
+def test_repo_file_outside_repos_fails(tmp_path):
+    make_valid(tmp_path)
+    write(tmp_path, "lessons/r.md", REPO_FM + "[[tool-a]]\n")
+    assert any("must live under repos/" in e for e in ckg.check(str(tmp_path)))
+
+
+def test_repo_file_valid(tmp_path):
+    make_valid(tmp_path)
+    write(tmp_path, "repos/r.md", REPO_FM + "# r\n\nA game.\n\nRelated: [[tool-a]]\n")
+    assert ckg.check(str(tmp_path)) == []
+
+
+def test_repo_file_under_entities_fails(tmp_path):
+    make_valid(tmp_path)
+    write(tmp_path, "entities/tool-b.md", REPO_FM + "[[tool-a]]\n")
+    assert any("must live under repos/" in e for e in ckg.check(str(tmp_path)))
+
+
+def test_repo_file_errors(tmp_path):
+    make_valid(tmp_path)
+    bad = REPO_FM.replace("org: example-org", "org: nobody").replace("section: product", "section: x")
+    write(tmp_path, "repos/r.md", bad + "# r\n\nNo hub. " + "x" * 2500 + "\n")
+    errors = "\n".join(ckg.check(str(tmp_path)))
+    assert "repo org must be one of" in errors
+    assert "repo section must be one of" in errors
+    assert "over the 2500 byte cap" in errors
+    assert "orphan repo" in errors
+
+
+def test_repo_file_verify_fields_checked(tmp_path):
+    make_valid(tmp_path)
+    write(tmp_path, "repos/r.md", REPO_FM.replace("verify_query: github:repo:example-org/r\n", "") + "[[tool-a]]\n")
+    assert any("verify_query is missing" in e for e in ckg.check(str(tmp_path)))
 
 
 def test_jira_origin_experiment_lesson_valid(tmp_path):
@@ -107,7 +145,7 @@ def test_lesson_meta_and_id_errors(tmp_path):
 
 def test_missing_block_id_fails_for_lesson(tmp_path):
     make_valid(tmp_path)
-    write(tmp_path, "repos/org.md", FM % ("repos/org", "catalog") + "# Repos\n- `r` [[tool-a]]\n")
+    write(tmp_path, "lessons/ua.md", FM % ("lessons/ua", "lesson") + "## Lesson [[tool-a]]\n")
     assert any("entry has no block id" in e for e in ckg.check(str(tmp_path)))
 
 

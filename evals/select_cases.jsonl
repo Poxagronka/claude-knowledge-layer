@@ -12,7 +12,7 @@
 {"prompt": "Где лежит плейбук по инцидентам?", "lang": "ru", "must": ["entities/playbook-example-playbook"], "ok": ["confluence/EXAMPLE#^page-100001"], "none": false, "split": "holdout"}
 {"prompt": "What is the faster onboarding initiative and who owns it?", "lang": "en", "must": ["entities/initiative-example-initiative"], "ok": ["entities/team-example", "entities/metric-example-metric", "example/hypotheses#^H-example-faster-onboarding"], "none": false}
 {"prompt": "Что за инициатива по быстрому онбордингу и кто за неё отвечает?", "lang": "ru", "must": ["entities/initiative-example-initiative"], "ok": ["entities/team-example", "entities/metric-example-metric"], "none": false}
-{"prompt": "Which repo holds the backend of Example App?", "lang": "en", "must": ["repos/example-org#^repo-example-service"], "ok": ["entities/service-example-service", "entities/product-example-app"], "none": false, "split": "holdout"}
+{"prompt": "Which repo holds the backend of Example App?", "lang": "en", "must": ["repos/example-service"], "ok": ["entities/service-example-service", "entities/product-example-app"], "none": false, "split": "holdout"}
 {"prompt": "Which Jira board holds experiments for Example App?", "lang": "en", "must": ["experiments/knowledge#^K-exp-board-exp"], "ok": ["entities/product-example-app", "entities/team-example"], "none": false, "split": "holdout"}
 {"prompt": "Fix the off-by-one error in this for loop and add a unit test for it", "lang": "en", "must": [], "ok": [], "none": true}
 {"prompt": "Write a Python function that reverses a linked list", "lang": "en", "must": [], "ok": [], "none": true}

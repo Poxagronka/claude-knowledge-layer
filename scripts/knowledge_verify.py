@@ -30,7 +30,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_knowledge_graph as ckg  # noqa: E402
-from repo_catalog import WINDOW_DAYS  # noqa: E402
+from repo_catalog import WINDOW_DAYS, first_sentence, purpose_of  # noqa: E402
 
 HTTP_TIMEOUT = 30
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -38,7 +38,6 @@ with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
     CONFIG = json.load(fh)
 SLACK_ID = re.compile(r"^[UW][A-Z0-9]{6,}$")
 UNSAFE_PATH = re.compile(r"\.\.|[?#%\\]")
-PURPOSE = re.compile(r"^- `[^`]+`: (.*?)(?: See \[\[.*)?$")
 # When several queries join one record, the worst verdict wins.
 ORDER = ("gone", "changed", "error", "manual", "ok")
 
@@ -74,29 +73,26 @@ def load_env_file(path):
 
 
 def records(vault):
-    """Yield one dict per hub or entry that has a verify_query other than none."""
+    """Yield one dict per hub, repo file or entry that has a verify_query other than none."""
     for path in sorted(ckg.md_files(vault)):
         rel = os.path.relpath(path, vault)
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         meta = ckg.frontmatter(text) or {}
-        if meta.get("type") == "entity":
+        if meta.get("type") in ("entity", "repo"):
             query = (meta.get("verify_query") or "none").strip()
+            purpose = first_sentence(purpose_of(text)) if meta["type"] == "repo" else None
             yield {"id": meta.get("id", rel[:-3]), "file": rel, "kind": "hub", "query": query,
-                   "seen": meta.get("verified") or "", "bid": None, "meta": meta, "purpose": None}
+                   "seen": meta.get("verified") or "", "bid": None, "meta": meta, "purpose": purpose}
         elif meta.get("type") in ckg.ID_SHAPE:
             for _num, _title, group, bid in ckg.entries(text):
                 if not bid:
                     continue
                 fields = dict(ckg.FIELD.findall(" ".join(ln for _n, ln in group)))
-                first = group[0][1].strip()
-                match = PURPOSE.match(first) if first.startswith("- `") else None
                 seen = fields.get("last_verified") or fields.get("added")
                 query = (fields.get("verify_query") or "none").strip()
-                rec = {"id": "%s#^%s" % (meta.get("id", rel[:-3]), bid), "file": rel, "kind": "entry",
+                yield {"id": "%s#^%s" % (meta.get("id", rel[:-3]), bid), "file": rel, "kind": "entry",
                        "query": query, "seen": seen or "", "bid": bid, "meta": {}, "purpose": None}
-                rec["purpose"] = match.group(1) if match else None
-                yield rec
 
 
 def select(recs, oldest, only):

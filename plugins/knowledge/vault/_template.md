@@ -34,7 +34,7 @@ An entry must be useful. That is, it changes a decision or action of a reader in
 | Domains | `<domain>/` | rules, facts and hypotheses of one topic |
 | Lessons | `lessons/` | lessons learned, one file per domain |
 | API | `api/` | rules and facts about internal APIs |
-| Repos | `repos/` | the catalog of active repos |
+| Repos | `repos/` | one file per active repo, plus the map `repos/_index.md` |
 | Experiments | `experiments/` | a map of the boards where experiments live. Per-experiment results stay in the tracker. Durable takeaways go to `lessons/` |
 | Cards | `confluence/` | reference cards for durable internal pages |
 
@@ -59,7 +59,7 @@ A hub is `entities/<kind>-<slug>.md` with the tag `kind/<kind>`. Use one of thes
 | `playbook` | a playbook the organization follows. The hub is a reference card: link to the source of truth, last-updated date, a short summary and the table of contents |
 | `datasource` | a place where data or docs live: a database, a BI tool, an internal API, a tracker project set, a wiki space. The hub says what lies there, how to reach it (tool and env var names, never secret values), an index with one line per entry point, and the questions it answers. No live numbers |
 
-A repo is not a hub. Repos are catalog entries in `repos/<org>.md`.
+A repo is not a hub. A repo has its own file `repos/<name>.md` with `type: repo`. See "Repo files".
 
 A person hub is `entities/person-<slug>.md` with the tag `kind/person`. Its frontmatter has the keys listed in `person_required` of `knowledge.json` (default `title` and `department`). `github` (the login) and `slack` (the member ID) are optional. The hub never holds an email, a phone or any contact. When the `directory` family is set up, `scripts/knowledge_verify.py` compares `title` and `department` with your people directory.
 
@@ -93,7 +93,8 @@ The orphan rule: every entry in a domain, `lessons/` or `repos/` file links at l
 | `api/rules.md`, `api/knowledge.md` | `rule`, `fact` | a normal domain: internal APIs |
 | `lessons/<domain>.md` | `lesson` | one per leaf section |
 | `experiments/knowledge.md` | `fact` | the board map: the leaf-section rule below |
-| `repos/<org>.md` | `catalog` | one per repo |
+| `repos/<name>.md` | `repo` | the whole file is one repo note, see "Repo files" |
+| `repos/_index.md` | `map` | the whole file is one note: the repo map |
 | `confluence/<SPACE>.md` | `card` | one per Confluence page, see "Reference cards" |
 | `entities/<kind>-<slug>.md` | `entity` | the whole file is one note (a hub) |
 | `_index.md`, `lessons/_index.md`, `_graveyard.md`, `_template.md` | `map` | the whole file is one note |
@@ -166,18 +167,41 @@ Lesson (one entry per leaf section; `added`, `source`, `origin`, `status` and `v
 [added:: <YYYY-MM-DD>] [source:: slack:<ts>] [origin:: slack] [author:: <Name — Role>] [status:: active] [verify_with:: slack] [verify_query:: slack:<channel id>:<ts>] ^L-<slug>
 ```
 
-Catalog entry (one per repo):
+## Repo files
+
+Each active repo gets one file `repos/<name>.md`. A repo is active when it is not archived and has a push in the last 6 months. The map `repos/_index.md` lists them.
 
 ```markdown
-- `<repo-name>`: <what it does>. See [[service-<slug>]].
-  [added:: <YYYY-MM-DD>] [verify_with:: github] [verify_query:: github:repo:<org>/<repo-name>] ^repo-<repo-name>
+---
+id: repos/<name>
+type: repo
+tags: [domain/repos]
+org: <org key from scripts/repo_catalog.json>
+section: <product|tool|package|service|qa|data|other>
+added: <YYYY-MM-DD>
+verify_with: github
+verify_query: github:repo:<org>/<name>
+---
+# <name>
+
+<What the repo is and does.>
+
+- GitHub: `<org>/<name>`
+- Status: active
+
+Related: [[service-<slug>]]
 ```
+
+- `org` is a key of `orgs` in `scripts/repo_catalog.json`. `section` is one of the section keys in `scripts/repo_catalog.py`.
+- The first paragraph says what the repo is and does. The map uses its first sentence.
+- Optional bullets: Stack, Start reading, Env names (names only), Answers. Omit a bullet you cannot confirm.
+- `Related:` links at least one `entities/` hub. The gate rejects a repo file over 2500 bytes.
 
 ## Ids
 
 - The block-id charset is `A-Z`, `a-z`, `0-9` and `-`.
 - A block id is unique in its file. The entry id is `<vault path>#^<block id>`.
-- Rules: `^R<n>`. Facts: `^K-<slug>`. Hypotheses: `^H-<slug>`. Lessons: `^L-<slug>`. Repos: `^repo-<name>`.
+- Rules: `^R<n>`. Facts: `^K-<slug>`. Hypotheses: `^H-<slug>`. Lessons: `^L-<slug>`. A repo file has no block ids.
 - `<slug>` is lower case, words joined by `-`.
 - A removed id is never reused. `_graveyard.md` holds it.
 
@@ -185,7 +209,7 @@ Catalog entry (one per repo):
 
 Every hub and every entry names how to check itself against a live source. The gate requires `verify_with` on all of them. Write `none` when no check applies.
 
-- A hub puts `verify_with` and `verify_query` in its frontmatter. A team hub may use `verify_with: confluence` and `verify_query: confluence:<page id>` when a planning page is its source.
+- A hub or a repo file puts `verify_with` and `verify_query` in its frontmatter. A team hub may use `verify_with: confluence` and `verify_query: confluence:<page id>` when a planning page is its source.
 - An entry puts `[verify_with:: …]` and `[verify_query:: …]` on its meta line.
 - `verify_query` holds one query. Join several with `;`. Every query must fit the `verify_with` family.
 

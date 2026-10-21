@@ -35,7 +35,7 @@ The files in this vault are samples. They show the format with invented content.
 - Example domain: [[example/knowledge]], [[example/hypotheses]] and [[example/rules]].
 - API: [[api/knowledge]] and [[api/rules]]. Internal API facts and rules.
 - Lessons: [[lessons/_index]] and [[lessons/example]].
-- Repos: [[repos/example-org]]. The catalog of active repos.
+- Repos: [[repos/_index]]. One file per active repo.
 - Experiments: [[experiments/knowledge]]. A map of the boards where experiments live.
 - Reference cards: [[confluence/EXAMPLE]]. Cards that point to durable internal pages.
 
